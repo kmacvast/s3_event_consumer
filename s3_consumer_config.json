@@ -1,0 +1,8 @@
+{
+  "kafka_config": {
+    "bootstrap.servers": "IP_ADDRESS_1:PORT,IP_ADDRESS_2:PORT",
+    "group.id": "your-consumer-group",
+    "auto.offset.reset": "earliest"
+  },
+  "topic": "your-topic-name"
+}
