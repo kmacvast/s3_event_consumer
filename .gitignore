@@ -240,3 +240,8 @@ s3_consumer_config.json
 /dist/
 /stage/
 *.tar.gz
+
+# Exception: the prebuilt archives in bin/ are the CI-produced downloads that
+# ship with the repository (see bin/README.md). Everything else *.tar.gz above
+# is local build output.
+!bin/*.tar.gz

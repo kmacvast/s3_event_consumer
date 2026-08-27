@@ -24,11 +24,28 @@ notification pointing at that topic. If you still need to set that up, follow
 
 ## Option A: standalone executable (no Python needed)
 
-The easiest way to run the demo. Builds are published for **Linux x86_64** and
-**macOS Apple Silicon**.
+The easiest way to run the demo. Prebuilt executables for **Linux x86_64** and
+**macOS Apple Silicon** are checked into [`bin/`](bin/), so you can download one
+straight from this repository — no Python, no build step, no CI login.
 
-1. Download the archive for your platform from the
+1. Download the archive for your platform:
+
+   | Platform | Download |
+   | --- | --- |
+   | Linux x86_64 (glibc 2.28+) | [s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz](https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz) |
+   | macOS Apple Silicon | [s3_event_consumer-dev-08247bc-macos-arm64.tar.gz](https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-dev-08247bc-macos-arm64.tar.gz) |
+
+   Or from the command line:
+
+   ```bash
+   curl -LO https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz
+   ```
+
+   These are the unmodified GitHub Actions build artifacts; SHA-256 checksums and
+   full build provenance are in [bin/README.md](bin/README.md). Tagged versions
+   will additionally appear on the
    [Releases page](https://github.com/kmacvast/s3_event_consumer/releases).
+
 2. Extract it and create your configuration:
 
    ```bash
