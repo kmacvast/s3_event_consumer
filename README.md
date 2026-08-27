@@ -31,7 +31,10 @@ curl -LO https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/l
 curl -LO https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/macos-arm64/s3_event_consumer
 ```
 
-SHA-256 checksums and build provenance are in [bin/README.md](bin/README.md).
+Use these links rather than browsing to the files on GitHub: the web viewer
+cannot display a 14 MB binary and reports *"we can't show files that are this
+big right now"*. SHA-256 checksums and build provenance are in
+[bin/README.md](bin/README.md).
 
 ### 2. Create your configuration
 

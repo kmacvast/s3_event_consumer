@@ -4,10 +4,16 @@ Single-file executables for `s3_event_consumer`, checked into this repository so
 they can be **downloaded directly** — one click, one file, no archive to extract
 and **no Python installation** on the machine that runs them.
 
-| Platform | Executable | Direct download |
+| Platform | Repository path | Direct download |
 | --- | --- | --- |
-| Linux x86_64 (glibc 2.28+) | [`linux-x86_64/s3_event_consumer`](linux-x86_64/s3_event_consumer) | <https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/linux-x86_64/s3_event_consumer> |
-| macOS ARM64 / Apple Silicon | [`macos-arm64/s3_event_consumer`](macos-arm64/s3_event_consumer) | <https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/macos-arm64/s3_event_consumer> |
+| Linux x86_64 (glibc 2.28+) | `bin/linux-x86_64/s3_event_consumer` | **[download](https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/linux-x86_64/s3_event_consumer)** |
+| macOS ARM64 / Apple Silicon | `bin/macos-arm64/s3_event_consumer` | **[download](https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/macos-arm64/s3_event_consumer)** |
+
+> **Use the download links above, not GitHub's file browser.** Opening either
+> executable in GitHub's web viewer shows *"we can't show files that are this
+> big right now"* — that is the viewer declining to render a 14 MB binary, not a
+> problem with the file. The links above bypass the viewer and download the file
+> directly.
 
 Everything the program needs — the Python runtime, `confluent_kafka`,
 `librdkafka` and `Pygments` — is bundled inside the executable. Configuration is
