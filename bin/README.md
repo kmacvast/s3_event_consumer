@@ -6,27 +6,39 @@ installation on the target machine.
 
 | Platform | Archive |
 | --- | --- |
-| Linux x86_64 (glibc 2.28+) | [`s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz`](s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz) |
-| macOS Apple Silicon (arm64) | [`s3_event_consumer-dev-08247bc-macos-arm64.tar.gz`](s3_event_consumer-dev-08247bc-macos-arm64.tar.gz) |
+| Linux x86_64 (glibc 2.28+) | [`s3_event_consumer-linux-x86_64.tar.gz`](s3_event_consumer-linux-x86_64.tar.gz) |
+| macOS Apple Silicon (arm64) | [`s3_event_consumer-macos-arm64.tar.gz`](s3_event_consumer-macos-arm64.tar.gz) |
 
 Each archive contains the executable and a copy of
 `s3_consumer_config.example.json`. See the
 [repository README](../README.md#option-a-standalone-executable-no-python-needed)
-for download, extraction and configuration steps.
+for download, extraction and configuration steps, or the
+[VAST deployment guide](../docs/vast-kafka-event-broker-5.4.md#51-get-the-consumer)
+for the end-to-end walkthrough.
+
+These are the intended **first public, demo-ready binaries** for the project.
 
 ## Provenance
 
 These are the **unmodified artifacts** from GitHub Actions run
 [33091023706](https://github.com/kmacvast/s3_event_consumer/actions/runs/33091023706),
 a manual (`workflow_dispatch`) run of
-[build-release.yml](../.github/workflows/build-release.yml) against commit
-`08247bc38640e70020737fa371ae95666f17dd54` on `main`. Nothing was rebuilt,
-re-signed, renamed or repacked locally.
+[build-release.yml](../.github/workflows/build-release.yml) against source commit
+`08247bc38640e70020737fa371ae95666f17dd54` on `main`.
 
-The `dev-08247bc` in each filename is how the workflow names builds that were
-not triggered by a version tag; it records the exact commit the executable was
-built from. A future `v*` tag will produce identically built archives named for
-that tag and attach them to a GitHub Release.
+Nothing was rebuilt, re-signed, recompressed or repacked. The archive **contents
+and bytes are exactly as CI produced them** — only the repository filenames
+differ. CI names untagged builds `s3_event_consumer-dev-<short-sha>-<platform>.tar.gz`;
+they are checked in here under stable, customer-facing names so download links
+stay valid across rebuilds:
+
+| CI artifact filename | Filename in this directory |
+| --- | --- |
+| `s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz` | `s3_event_consumer-linux-x86_64.tar.gz` |
+| `s3_event_consumer-dev-08247bc-macos-arm64.tar.gz` | `s3_event_consumer-macos-arm64.tar.gz` |
+
+A future `v*` tag will build identically and attach tag-named archives to a
+GitHub Release.
 
 | | Linux x86_64 | macOS arm64 |
 | --- | --- | --- |
@@ -48,8 +60,8 @@ shasum -a 256 -c SHA256SUMS
 Expected digests:
 
 ```
-67031d9512c34b69eb00c781f2c9685df69c65bdaa31c499122094a0eefacdce  s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz
-62a1176ca6f0337264c4d87b2372c6bf9e37e4e79aef45c08a06aa8d05f41fbb  s3_event_consumer-dev-08247bc-macos-arm64.tar.gz
+67031d9512c34b69eb00c781f2c9685df69c65bdaa31c499122094a0eefacdce  s3_event_consumer-linux-x86_64.tar.gz
+62a1176ca6f0337264c4d87b2372c6bf9e37e4e79aef45c08a06aa8d05f41fbb  s3_event_consumer-macos-arm64.tar.gz
 ```
 
 On Linux use `sha256sum -c SHA256SUMS` instead.

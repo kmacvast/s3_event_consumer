@@ -32,13 +32,13 @@ straight from this repository — no Python, no build step, no CI login.
 
    | Platform | Download |
    | --- | --- |
-   | Linux x86_64 (glibc 2.28+) | [s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz](https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz) |
-   | macOS Apple Silicon | [s3_event_consumer-dev-08247bc-macos-arm64.tar.gz](https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-dev-08247bc-macos-arm64.tar.gz) |
+   | Linux x86_64 (glibc 2.28+) | [s3_event_consumer-linux-x86_64.tar.gz](https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-linux-x86_64.tar.gz) |
+   | macOS Apple Silicon | [s3_event_consumer-macos-arm64.tar.gz](https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-macos-arm64.tar.gz) |
 
    Or from the command line:
 
    ```bash
-   curl -LO https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-dev-08247bc-linux-x86_64.tar.gz
+   curl -LO https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-linux-x86_64.tar.gz
    ```
 
    These are the unmodified GitHub Actions build artifacts; SHA-256 checksums and
@@ -49,7 +49,7 @@ straight from this repository — no Python, no build step, no CI login.
 2. Extract it and create your configuration:
 
    ```bash
-   tar -xzf s3_event_consumer-*-linux-x86_64.tar.gz
+   tar -xzf s3_event_consumer-linux-x86_64.tar.gz
    cp s3_consumer_config.example.json s3_consumer_config.json
    ```
 
