@@ -303,27 +303,28 @@ The consumer lives in this repository:
 There are two ways to run it. Python is **not** required for the first.
 
 **Standalone executable — recommended for simply running the demo.**
-Prebuilt archives are checked into the repository under
-[`bin/`](../bin/), so no Python installation and no GitHub Release are needed:
+The executables are checked into the repository under [`bin/`](../bin/) and can
+be downloaded directly — a single file each, with nothing to extract:
 
-| Platform | Download |
+| Platform | Direct download |
 | --- | --- |
-| Linux x86_64 | <https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-linux-x86_64.tar.gz> |
-| macOS Apple Silicon | <https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-macos-arm64.tar.gz> |
+| Linux x86_64 | <https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/linux-x86_64/s3_event_consumer> |
+| macOS ARM64 / Apple Silicon | <https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/macos-arm64/s3_event_consumer> |
 
 On the consumer host:
 
 ```bash
-curl -LO https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-linux-x86_64.tar.gz
-tar -xzf s3_event_consumer-linux-x86_64.tar.gz
+curl -LO https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/linux-x86_64/s3_event_consumer
+chmod +x s3_event_consumer
 ```
 
-The archive contains the executable and `s3_consumer_config.example.json`.
-Checksums and build provenance are in [`bin/README.md`](../bin/README.md).
+`chmod +x` is only needed if the download did not preserve the executable
+permission. Checksums and build provenance are in
+[`bin/README.md`](../bin/README.md).
 
-The Linux build needs glibc 2.28 or newer. The macOS build is unsigned; see the
-[README](../README.md#option-a-standalone-executable-no-python-needed) if
-macOS blocks it. Commands below are shown as `./s3_event_consumer`.
+The Linux build needs glibc 2.28 or newer. The macOS build is ad-hoc signed
+rather than notarised; see the [README](../README.md#download-and-run) if macOS
+blocks it. Commands below are shown as `./s3_event_consumer`.
 
 **Python source — useful for development or inspection.**
 
@@ -340,8 +341,16 @@ Requires Python 3.9 or newer. Substitute `python3 s3_event_consumer.py` for
 
 ### 5.2 Configure
 
+If you cloned the repository, start from the example file:
+
 ```bash
 cp s3_consumer_config.example.json s3_consumer_config.json
+```
+
+If you only downloaded the executable, fetch the example alongside it:
+
+```bash
+curl -L -o s3_consumer_config.json https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/s3_consumer_config.example.json
 ```
 
 Edit `s3_consumer_config.json`:

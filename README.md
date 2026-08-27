@@ -9,6 +9,67 @@ Nothing here is VAST-specific — it uses the ordinary `confluent-kafka` client,
 which is the point: the Event Broker speaks the Kafka protocol. It is a demo
 utility, not a production Kafka framework.
 
+## Download and run
+
+A single self-contained executable. **No Python, no archive to extract, no
+install.**
+
+### 1. Download the executable for your platform
+
+| Platform | Download |
+| --- | --- |
+| **Linux x86_64** | **[s3_event_consumer](https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/linux-x86_64/s3_event_consumer)** |
+| **macOS ARM64 / Apple Silicon** | **[s3_event_consumer](https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/macos-arm64/s3_event_consumer)** |
+
+Or from a terminal:
+
+```bash
+# Linux x86_64
+curl -LO https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/linux-x86_64/s3_event_consumer
+
+# macOS Apple Silicon
+curl -LO https://raw.githubusercontent.com/kmacvast/s3_event_consumer/main/bin/macos-arm64/s3_event_consumer
+```
+
+SHA-256 checksums and build provenance are in [bin/README.md](bin/README.md).
+
+### 2. Create your configuration
+
+```bash
+cp s3_consumer_config.example.json s3_consumer_config.json
+```
+
+Edit `s3_consumer_config.json` and set the broker endpoints and topic — see
+[Configuration](#configuration). If you did not clone the repository, copy
+[s3_consumer_config.example.json](s3_consumer_config.example.json) and save it as
+`s3_consumer_config.json` next to the executable.
+
+### 3. Run it
+
+```bash
+chmod +x s3_event_consumer
+./s3_event_consumer --config s3_consumer_config.json
+```
+
+`chmod +x` is only needed if the download did not preserve the executable
+permission — browsers and some filesystems drop it. If the file already runs, skip it.
+
+**Linux:** requires glibc 2.28 or newer — RHEL/Rocky/AlmaLinux 8 and 9,
+Ubuntu 20.04+, Debian 11+. x86_64 only; musl-based distributions such as Alpine
+are not supported.
+
+**macOS:** the executable is ad-hoc signed, not notarised, so Gatekeeper blocks
+files downloaded by a browser. Downloading with `curl` avoids this. If macOS does
+block it, clear the quarantine flag on that file **before** running it — once a
+quarantined binary has been blocked, clearing the flag afterwards will not help
+and you need to download it again:
+
+```bash
+xattr -d com.apple.quarantine ./s3_event_consumer
+```
+
+## How it fits together
+
 ```mermaid
 flowchart LR
     A["S3 client<br/>(aws s3api put-object)"] --> B["VAST S3 bucket<br/>demo-data"]
@@ -22,59 +83,7 @@ You need a VAST Kafka Event Broker, a topic, and an S3 bucket with an event
 notification pointing at that topic. If you still need to set that up, follow
 **[Deploying a Kafka Event Broker in VAST 5.4](docs/vast-kafka-event-broker-5.4.md)**.
 
-## Option A: standalone executable (no Python needed)
-
-The easiest way to run the demo. Prebuilt executables for **Linux x86_64** and
-**macOS Apple Silicon** are checked into [`bin/`](bin/), so you can download one
-straight from this repository — no Python, no build step, no CI login.
-
-1. Download the archive for your platform:
-
-   | Platform | Download |
-   | --- | --- |
-   | Linux x86_64 (glibc 2.28+) | [s3_event_consumer-linux-x86_64.tar.gz](https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-linux-x86_64.tar.gz) |
-   | macOS Apple Silicon | [s3_event_consumer-macos-arm64.tar.gz](https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-macos-arm64.tar.gz) |
-
-   Or from the command line:
-
-   ```bash
-   curl -LO https://github.com/kmacvast/s3_event_consumer/raw/main/bin/s3_event_consumer-linux-x86_64.tar.gz
-   ```
-
-   These are the unmodified GitHub Actions build artifacts; SHA-256 checksums and
-   full build provenance are in [bin/README.md](bin/README.md). Tagged versions
-   will additionally appear on the
-   [Releases page](https://github.com/kmacvast/s3_event_consumer/releases).
-
-2. Extract it and create your configuration:
-
-   ```bash
-   tar -xzf s3_event_consumer-linux-x86_64.tar.gz
-   cp s3_consumer_config.example.json s3_consumer_config.json
-   ```
-
-3. Edit `s3_consumer_config.json` — see [Configuration](#configuration).
-4. Run it:
-
-   ```bash
-   ./s3_event_consumer --config s3_consumer_config.json
-   ```
-
-**Linux:** requires glibc 2.28 or newer — RHEL/Rocky/AlmaLinux 8 and 9,
-Ubuntu 20.04+, Debian 11+. x86_64 only; musl-based distributions such as Alpine
-are not supported.
-
-**macOS:** the executable is not code-signed or notarised. Extracting the archive
-with `tar` in Terminal leaves it unquarantined and it runs normally. If macOS
-does block it, remove the quarantine flag **before** running it — once a
-quarantined binary has been blocked, clearing the flag afterwards will not help
-and you need to re-extract:
-
-```bash
-xattr -d com.apple.quarantine ./s3_event_consumer
-```
-
-## Option B: run from Python source
+## Running from Python source instead
 
 For developers, or anyone who wants to read or modify the script.
 
@@ -95,7 +104,7 @@ syntax highlighting).
 
 ## Configuration
 
-Both options read the same external JSON file — nothing is baked into the
+Both the executable and the Python source read the same external JSON file — nothing is baked into the
 executable.
 
 ```json
