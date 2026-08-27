@@ -18,22 +18,28 @@ jobs:
   linux-x86_64:
     name: Linux x86_64
     runs-on: ubuntu-latest
-    # Built inside a manylinux_2_28 image (AlmaLinux 8, glibc 2.28) rather than
-    # on the runner itself. A PyInstaller executable requires the glibc it was
-    # built against or newer; ubuntu-latest would raise that floor to glibc 2.39
-    # and exclude RHEL 8/9, Debian 12 and Ubuntu 22.04. If this container ever
-    # becomes a problem, drop the `container:` line and use `runs-on: ubuntu-22.04`
-    # instead, accepting a glibc 2.35 floor.
-    container: quay.io/pypa/manylinux_2_28_x86_64
+    # Built inside AlmaLinux 8 (glibc 2.28, RHEL 8 ABI) rather than on the runner
+    # itself. A PyInstaller executable needs the glibc it was built against or
+    # newer, and ubuntu-latest would raise that floor to glibc 2.39 - excluding
+    # RHEL 8/9, Debian 11/12 and Ubuntu 20.04/22.04.
+    #
+    # Note this is NOT a manylinux image: those ship a statically-built CPython
+    # with Py_ENABLE_SHARED=0 and no libpython*.so, which PyInstaller rejects. The
+    # AlmaLinux python3.12 package is built with --enable-shared and provides
+    # /usr/lib64/libpython3.12.so.1.0, which is what PyInstaller needs to bundle.
+    container: almalinux:8
     steps:
-      - uses: actions/checkout@v4
+      # Runs before checkout: the base image has neither git nor Python 3.12.
+      - name: Install build prerequisites
+        run: dnf -y install git tar gzip binutils python3.12 python3.12-pip
+
+      - uses: actions/checkout@v7
 
       - name: Build
         run: |
-          /opt/python/cp312-cp312/bin/python -m venv /tmp/venv
-          /tmp/venv/bin/pip install --upgrade pip
-          /tmp/venv/bin/pip install -r requirements.txt "pyinstaller==${PYINSTALLER_VERSION}"
-          /tmp/venv/bin/pyinstaller --onefile --name s3_event_consumer --clean --noconfirm s3_event_consumer.py
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install -r requirements.txt "pyinstaller==${PYINSTALLER_VERSION}"
+          python3.12 -m PyInstaller --onefile --name s3_event_consumer --clean --noconfirm s3_event_consumer.py
 
       - name: Smoke test
         run: |
@@ -52,7 +58,7 @@ jobs:
           cp dist/s3_event_consumer s3_consumer_config.example.json stage/
           tar -czf "s3_event_consumer-${VERSION}-linux-x86_64.tar.gz" -C stage .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: s3_event_consumer-linux-x86_64
           path: s3_event_consumer-*-linux-x86_64.tar.gz
@@ -63,9 +69,9 @@ jobs:
     # macos-14 and newer are Apple Silicon. Built natively — never cross-compiled.
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -89,7 +95,7 @@ jobs:
           cp dist/s3_event_consumer s3_consumer_config.example.json stage/
           tar -czf "s3_event_consumer-${VERSION}-macos-arm64.tar.gz" -C stage .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: s3_event_consumer-macos-arm64
           path: s3_event_consumer-*-macos-arm64.tar.gz
@@ -104,7 +110,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true

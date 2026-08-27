@@ -43,8 +43,9 @@ The easiest way to run the demo. Builds are published for **Linux x86_64** and
    ./s3_event_consumer --config s3_consumer_config.json
    ```
 
-**Linux:** requires glibc 2.28 or newer (RHEL/Rocky/Alma 8+, Ubuntu 20.04+,
-Debian 11+). x86_64 only.
+**Linux:** requires glibc 2.28 or newer — RHEL/Rocky/AlmaLinux 8 and 9,
+Ubuntu 20.04+, Debian 11+. x86_64 only; musl-based distributions such as Alpine
+are not supported.
 
 **macOS:** the executable is not code-signed or notarised. Extracting the archive
 with `tar` in Terminal leaves it unquarantined and it runs normally. If macOS
