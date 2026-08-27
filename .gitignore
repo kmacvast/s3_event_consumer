@@ -216,3 +216,27 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- s3_event_consumer -----------------------------------------------------
+# Local, environment-specific consumer configuration. It names cluster VIPs and
+# may hold SASL credentials, so it must never be committed. Start from
+# s3_consumer_config.example.json instead.
+s3_consumer_config.json
+
+# macOS / editor artifacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# PyInstaller build output (see README: Building the executable yourself)
+/build/
+/dist/
+/stage/
+*.tar.gz

@@ -1,0 +1,8 @@
+{
+  "kafka_config": {
+    "bootstrap.servers": "<KAFKA_VIP_1>:<KAFKA_PORT>,<KAFKA_VIP_2>:<KAFKA_PORT>",
+    "group.id": "s3-event-demo",
+    "auto.offset.reset": "earliest"
+  },
+  "topic": "<KAFKA_TOPIC>"
+}

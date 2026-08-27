@@ -1,0 +1,6 @@
+# Kafka client used to consume S3 event notifications from the VAST
+# Kafka-compatible Event Broker. Bundles librdkafka.
+confluent-kafka>=2.0
+
+# Syntax highlighting for the printed JSON event payloads.
+pygments>=2.0
