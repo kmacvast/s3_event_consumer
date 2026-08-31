@@ -39,16 +39,37 @@ jobs:
         run: |
           python3.12 -m pip install --upgrade pip
           python3.12 -m pip install -r requirements.txt "pyinstaller==${PYINSTALLER_VERSION}"
-          python3.12 -m PyInstaller --onefile --name s3_event_consumer --clean --noconfirm s3_event_consumer.py
+          # PyIceberg is deliberately NOT bundled: it would take the executable
+          # from ~15 MB to ~94 MB. The exclusions make the build produce the same
+          # lightweight binary even if the environment has PyIceberg installed.
+          # See "Packaging and the standalone executables" in README.md.
+          python3.12 -m PyInstaller --onefile --name s3_event_consumer --clean --noconfirm \
+            --exclude-module pyiceberg --exclude-module pyarrow \
+            s3_event_consumer.py
 
       - name: Smoke test
         run: |
           ./dist/s3_event_consumer --help
-          # Must exit 1 and name the unedited placeholders.
+
+          # Must exit 1 and name the unedited placeholders. Output is captured
+          # rather than piped: these steps run under `set -o pipefail`, and the
+          # binary exits non-zero on purpose here.
           ! ./dist/s3_event_consumer --config s3_consumer_config.example.json
-          # Informational only - never fail the build on this.
+          OUT=$(./dist/s3_event_consumer --config s3_consumer_config.example.json 2>&1 || true)
+          grep -q 'still contains placeholders' <<<"$OUT"
+
+          # The shipped example keeps iceberg disabled, so reaching that error at
+          # all proves the binary does not need PyIceberg for the default path.
+          # With Iceberg enabled it must fail with the actionable message rather
+          # than a bare ModuleNotFoundError.
+          ! ./dist/s3_event_consumer --config s3_consumer_config.local-iceberg.json --check
+          OUT=$(./dist/s3_event_consumer --config s3_consumer_config.local-iceberg.json --check 2>&1 || true)
+          grep -q 'PyIceberg is not installed' <<<"$OUT"
+
+          # Informational only - never fail the build on these.
           echo "highest glibc symbol required:"
           objdump -T ./dist/s3_event_consumer 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true
+          echo "executable size: $(stat -c%s ./dist/s3_event_consumer) bytes"
 
       - name: Stage archive
         run: |
@@ -79,13 +100,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt "pyinstaller==${PYINSTALLER_VERSION}"
-          pyinstaller --onefile --name s3_event_consumer --clean --noconfirm s3_event_consumer.py
+          # See the note on the Linux job: the Iceberg sink is source-only.
+          pyinstaller --onefile --name s3_event_consumer --clean --noconfirm \
+            --exclude-module pyiceberg --exclude-module pyarrow \
+            s3_event_consumer.py
 
       - name: Smoke test
         run: |
           ./dist/s3_event_consumer --help
           ! ./dist/s3_event_consumer --config s3_consumer_config.example.json
+          ! ./dist/s3_event_consumer --config s3_consumer_config.local-iceberg.json --check
+          OUT=$(./dist/s3_event_consumer --config s3_consumer_config.local-iceberg.json --check 2>&1 || true)
+          grep -q 'PyIceberg is not installed' <<<"$OUT"
           file ./dist/s3_event_consumer
+          echo "executable size: $(stat -f%z ./dist/s3_event_consumer) bytes"
 
       - name: Stage archive
         run: |

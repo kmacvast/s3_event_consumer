@@ -19,6 +19,15 @@ Everything the program needs — the Python runtime, `confluent_kafka`,
 `librdkafka` and `Pygments` — is bundled inside the executable. Configuration is
 read at runtime from an external `s3_consumer_config.json`; nothing is baked in.
 
+> **These executables do not include Apache Iceberg support.**
+> PyIceberg and PyArrow would take the download from ~15 MB to 72–94 MB, so the
+> optional Iceberg sink is available when [running from Python
+> source](../README.md#running-from-python-source-instead) instead. Running one
+> of these binaries with `"iceberg": {"enabled": true}` exits 1 with a message
+> saying exactly that. Everything else — Kafka consumption and console output —
+> is unchanged. See [Packaging and the standalone
+> executables](../README.md#packaging-and-the-standalone-executables).
+
 See the [repository README](../README.md#download-and-run) for the download,
 configure and run steps, or the
 [VAST deployment guide](../docs/vast-kafka-event-broker-5.4.md#51-get-the-consumer)

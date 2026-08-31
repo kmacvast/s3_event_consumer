@@ -219,9 +219,18 @@ __marimo__/
 
 # --- s3_event_consumer -----------------------------------------------------
 # Local, environment-specific consumer configuration. It names cluster VIPs and
-# may hold SASL credentials, so it must never be committed. Start from
-# s3_consumer_config.example.json instead.
+# may hold SASL credentials or S3 access keys, so it must never be committed.
+# Start from s3_consumer_config.example.json instead, and prefer "env:NAME"
+# references over literal credentials for anything real.
 s3_consumer_config.json
+
+# Any other local config variant. s3_consumer_config.example.json and
+# s3_consumer_config.local-iceberg.json are committed on purpose - the first
+# holds only placeholders, the second only the throwaway credentials of the
+# loopback-only Docker Compose sandbox - so they are re-included below.
+s3_consumer_config.*.json
+!s3_consumer_config.example.json
+!s3_consumer_config.local-iceberg.json
 
 # macOS / editor artifacts
 .DS_Store

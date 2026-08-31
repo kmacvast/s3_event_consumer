@@ -1,0 +1,14 @@
+# Optional Apache Iceberg support. Install ON TOP of requirements.txt:
+#
+#     python3 -m pip install -r requirements.txt -r requirements-iceberg.txt
+#
+# Kept separate on purpose. PyIceberg pulls in PyArrow (~126 MB), the
+# pyiceberg_core Rust extension (~59 MB) and botocore (~26 MB) - roughly 250 MB
+# against the 14 MB of the base install. The prebuilt standalone executables in
+# bin/ therefore do NOT bundle these, and the Iceberg sink is available when
+# running from Python source. See "Packaging and the standalone executables" in
+# README.md.
+
+# Iceberg client. 's3fs' provides the S3 FileIO used to read and write the
+# warehouse; 'pyarrow' provides the in-memory table and the Parquet writer.
+pyiceberg[s3fs,pyarrow]>=0.9,<1.0

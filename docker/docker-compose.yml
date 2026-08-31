@@ -1,0 +1,209 @@
+# Local Apache Iceberg learning/demo environment for s3_event_consumer.
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# Everything binds to 127.0.0.1 only. See docs/iceberg-demo.md for the full
+# walkthrough.
+#
+#   minio         S3-compatible object store — the Iceberg *warehouse*
+#   demo-init     one-shot: creates the warehouse bucket + catalog dir, exits
+#   iceberg-rest  Iceberg REST catalog (apache/iceberg-rest-fixture)
+#   trino         SQL query engine, reads the same catalog and warehouse
+#   sqlpad        browser SQL UI, pre-wired to Trino (the GUI)
+#   kafka         single-node KRaft broker, stands in for the VAST Event Broker
+#
+# SECURITY NOTE
+# The credentials below are throwaway values for a laptop sandbox that listens
+# on the loopback interface only. They are deliberately the well-known MinIO
+# defaults so the demo runs with no setup. Never reuse them anywhere real, and
+# never put VAST or customer credentials in this file — point the consumer at
+# those with "env:NAME" references in your own git-ignored
+# s3_consumer_config.json instead.
+
+name: s3-event-iceberg-demo
+
+x-minio-credentials: &minio-credentials
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin
+  AWS_REGION: us-east-1
+
+services:
+  # ------------------------------------------------------------------ #
+  # Object store. Stands in for VAST S3 as the Iceberg warehouse.
+  # ------------------------------------------------------------------ #
+  minio:
+    image: minio/minio:latest
+    container_name: iceberg-demo-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      # Makes the console show a friendly hostname rather than a container IP.
+      MINIO_DOMAIN: minio
+    ports:
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # ------------------------------------------------------------------ #
+  # One-shot setup: creates the warehouse bucket once MinIO is up, and makes
+  # the catalog volume writable by the REST catalog's unprivileged user. Runs
+  # as root (the mc image's default) purely to do that chown, then exits.
+  # ------------------------------------------------------------------ #
+  demo-init:
+    image: minio/mc:latest
+    container_name: iceberg-demo-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/warehouse &&
+      chown -R 1000:1000 /catalog &&
+      echo 'warehouse bucket and catalog volume ready'
+      "
+    volumes:
+      - catalog-db:/catalog
+    restart: "no"
+
+  # ------------------------------------------------------------------ #
+  # Iceberg REST catalog. Table metadata pointers live in a SQLite file on a
+  # named volume; the table data and metadata files themselves live in MinIO.
+  # `docker compose down -v` wipes both.
+  # ------------------------------------------------------------------ #
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:latest
+    container_name: iceberg-demo-rest
+    depends_on:
+      demo-init:
+        condition: service_completed_successfully
+    # The image runs as uid 1000 (iceberg); a fresh named volume is root-owned,
+    # so say who should own the SQLite file's directory.
+    user: "1000:1000"
+    environment:
+      <<: *minio-credentials
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      # JDBC catalog backend. A file rather than :memory: so the catalog
+      # survives `docker compose restart`, which keeps snapshot history — and
+      # therefore the time-travel part of the demo — intact.
+      CATALOG_URI: jdbc:sqlite:file:/catalog/catalog.db
+      CATALOG_JDBC_SCHEMA__VERSION: V1
+    ports:
+      - "127.0.0.1:8181:8181"
+    volumes:
+      - catalog-db:/catalog
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8181/v1/config?warehouse=s3://warehouse/"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+
+  # ------------------------------------------------------------------ #
+  # Query engine. Reads the same REST catalog and the same MinIO warehouse the
+  # consumer writes to. Trino is a container in this demo environment only — it
+  # is never a dependency of the Python application.
+  #
+  # Its own web UI (http://localhost:8080/ui/) is a cluster/query monitoring
+  # dashboard only — the SQL editor is the separate sqlpad container below.
+  # ------------------------------------------------------------------ #
+  trino:
+    image: trinodb/trino:latest
+    container_name: iceberg-demo-trino
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  # ------------------------------------------------------------------ #
+  # Browser SQL UI. Pre-seeded with the Trino connection through environment
+  # variables, and with authentication switched off, so opening
+  # http://localhost:3000 puts you straight into a query editor with the
+  # Iceberg catalog already selected — no login, no setup wizard, no JDBC
+  # driver download. SQLPad bundles a native Trino driver.
+  #
+  # Trino's own web UI (http://localhost:8080/ui/) is a monitoring dashboard,
+  # not a query editor, which is why this container exists.
+  # ------------------------------------------------------------------ #
+  sqlpad:
+    image: sqlpad/sqlpad:latest
+    container_name: iceberg-demo-sqlpad
+    depends_on:
+      trino:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      SQLPAD_PORT: 3000
+      # Loopback-only sandbox: no accounts, everyone is an admin. Never do this
+      # anywhere reachable.
+      SQLPAD_AUTH_DISABLED: "true"
+      SQLPAD_AUTH_DISABLED_DEFAULT_ROLE: admin
+      SQLPAD_APP_LOG_LEVEL: warn
+      SQLPAD_WEB_LOG_LEVEL: warn
+      SQLPAD_QUERY_RESULT_MAX_ROWS: "10000"
+      SQLPAD_CONNECTIONS__iceberg__name: Iceberg on MinIO (via Trino)
+      SQLPAD_CONNECTIONS__iceberg__driver: trino
+      SQLPAD_CONNECTIONS__iceberg__host: trino
+      SQLPAD_CONNECTIONS__iceberg__port: "8080"
+      SQLPAD_CONNECTIONS__iceberg__username: sqlpad
+      SQLPAD_CONNECTIONS__iceberg__catalog: iceberg
+      SQLPAD_CONNECTIONS__iceberg__schema: s3_events
+
+  # ------------------------------------------------------------------ #
+  # Local stand-in for the VAST Kafka-compatible Event Broker, so the whole
+  # demo runs on a laptop. Against a real cluster, point the consumer at the
+  # VAST Event Broker VIPs instead and leave this container out.
+  # ------------------------------------------------------------------ #
+  kafka:
+    image: apache/kafka:latest
+    container_name: iceberg-demo-kafka
+    ports:
+      - "127.0.0.1:19092:19092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,HOST://:19092
+      # INTERNAL is how other containers reach the broker; HOST is how the
+      # consumer running on the macOS host reaches it through the published port.
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,HOST://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: s3-event-demo-cluster
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+
+volumes:
+  minio-data:
+  catalog-db:
