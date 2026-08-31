@@ -119,7 +119,7 @@ services:
   # dashboard only — the SQL editor is the separate sqlpad container below.
   # ------------------------------------------------------------------ #
   trino:
-    image: trinodb/trino:latest
+    image: trinodb/trino:435
     container_name: iceberg-demo-trino
     depends_on:
       iceberg-rest:

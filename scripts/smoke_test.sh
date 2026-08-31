@@ -175,7 +175,8 @@ pass "--no-iceberg never contacts the catalog"
 
 # A config with no iceberg section at all must look exactly as it did before
 # Iceberg support existed: not one line mentioning it.
-PLAIN_CONFIG=$(mktemp -t plain_config).json
+PLAIN_CONFIG=$(mktemp -t plain_config.XXXXXX).json
+#PLAIN_CONFIG=$(mktemp -t plain_config).json
 $PYTHON - "$CONFIG" "$PLAIN_CONFIG" <<'PYEOF'
 import json, sys
 document = json.load(open(sys.argv[1]))
