@@ -1,7 +1,7 @@
 """Tests for the sink layer: dispatch, console, and the buffered Iceberg writer.
 
-PyIceberg is mocked throughout. Nothing here needs Docker, Kafka, VAST, MinIO or
-a live catalog — see scripts/smoke_test.sh for the integration path.
+PyIceberg is mocked throughout. Nothing here needs Docker, Kafka, VAST or a
+live catalog — see scripts/smoke_test.sh for the integration path.
 
     python3 -m unittest discover -s tests -v
 """

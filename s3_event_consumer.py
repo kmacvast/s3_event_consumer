@@ -46,6 +46,7 @@ from s3events.config import (
     IcebergConfig,
     load_app_config,
     load_config,
+    safe_uri,
 )
 from s3events.flatten import flatten_event
 from s3events.sinks import (
@@ -283,7 +284,11 @@ def apply_manual_offset_commits(kafka_conf: dict[str, Any]) -> dict[str, Any]:
 def log_iceberg_settings(iceberg: IcebergConfig) -> None:
     """Report the Iceberg configuration, with credentials redacted."""
     LOG.info("Iceberg table:      %s", iceberg.table_identifier)
-    LOG.info("Iceberg catalog:    %s", iceberg.catalog_properties.get("uri", "<no uri>"))
+    LOG.info("Iceberg catalog:    %s", safe_uri(iceberg.catalog_properties.get("uri", "<no uri>")))
+    LOG.info("Iceberg warehouse:  %s", iceberg.catalog_properties.get("warehouse", "<not set>"))
+    LOG.info(
+        "Iceberg S3 endpoint: %s", iceberg.catalog_properties.get("s3.endpoint", "<not set>")
+    )
     LOG.info(
         "Iceberg batching:   up to %d record(s) or %.1fs, whichever comes first",
         iceberg.batch_size,
@@ -384,14 +389,21 @@ def main(argv: list[str] | None = None) -> int:
     committer = make_offset_committer(consumer) if config.iceberg is not None else None
     dispatcher = build_dispatcher(config, color, committer)
 
+    # Registered before opening the sinks, not after. Connecting to a catalog on
+    # an unreachable endpoint can block for a long time, and Ctrl-C during that
+    # wait must still close the Kafka consumer rather than leaving it dangling.
+    signal.signal(signal.SIGINT, request_stop)
+
     try:
         dispatcher.open()
     except SinkError as exc:
         LOG.error("Cannot start: %s", exc)
         consumer.close()
         return 1
-
-    signal.signal(signal.SIGINT, request_stop)
+    except KeyboardInterrupt:
+        LOG.error("Interrupted while opening the Iceberg sink; nothing was consumed.")
+        consumer.close()
+        return 1
 
     exit_code = 0
     try:

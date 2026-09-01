@@ -19,11 +19,11 @@ from s3events.flatten import EventRow, flatten_event, parse_timestamp  # noqa: E
 COMPLETE_EVENT = {
     "Records": [
         {
-            "eventVersion": "2.1",
+            "eventVersion": "2.2",
             "eventSource": "vast:s3",
             "awsRegion": "us-east-1",
             "eventTime": "2026-08-31T09:03:41.123Z",
-            "eventName": "ObjectCreated:Put",
+            "eventName": "s3:ObjectCreated:Put",
             "s3": {
                 "bucket": {"name": "demo-data"},
                 "object": {"key": "hello.txt", "size": 742, "eTag": "d41d8cd98f00b204"},
@@ -60,7 +60,7 @@ class CompleteEventTestCase(unittest.TestCase):
 
     def test_s3_fields_are_flattened(self):
         row = self.rows[0]
-        self.assertEqual(row.event_name, "ObjectCreated:Put")
+        self.assertEqual(row.event_name, "s3:ObjectCreated:Put")
         self.assertEqual(row.event_source, "vast:s3")
         self.assertEqual(row.bucket, "demo-data")
         self.assertEqual(row.object_key, "hello.txt")
@@ -260,6 +260,92 @@ class FieldSpellingTestCase(unittest.TestCase):
     def test_url_encoded_object_key_is_decoded(self):
         event = {"Records": [{"s3": {"object": {"key": "reports/q1+report%20final.pdf"}}}]}
         self.assertEqual(flatten(event)[0].object_key, "reports/q1 report final.pdf")
+
+
+class VastPayloadTestCase(unittest.TestCase):
+    """Details specific to what VAST actually publishes."""
+
+    def test_the_s3_prefix_on_event_name_is_preserved(self):
+        """VAST sends 's3:ObjectCreated:Put'; the prefix must not be stripped."""
+        event = {"Records": [{"eventName": "s3:ObjectCreated:Put", "s3": {}}]}
+        self.assertEqual(flatten(event)[0].event_name, "s3:ObjectCreated:Put")
+
+    def test_vast_event_source_is_preserved(self):
+        event = {"Records": [{"eventSource": "vast:s3", "s3": {}}]}
+        self.assertEqual(flatten(event)[0].event_source, "vast:s3")
+
+    def test_vast_microsecond_event_time_parses(self):
+        """VAST's documented format has 6 fractional digits and a Z suffix."""
+        event = {"Records": [{"eventTime": "2024-10-01T10:51:35.859365Z", "s3": {}}]}
+        self.assertEqual(
+            flatten(event)[0].event_time,
+            dt.datetime(2024, 10, 1, 10, 51, 35, 859365, tzinfo=dt.timezone.utc),
+        )
+
+    def test_arn_style_bucket_does_not_confuse_the_name_lookup(self):
+        event = {
+            "Records": [
+                {"s3": {"bucket": {"name": "demo-data", "arn": "arn:vast:s3:::demo-data"}}}
+            ]
+        }
+        self.assertEqual(flatten(event)[0].bucket, "demo-data")
+
+
+class VastTestEventTestCase(unittest.TestCase):
+    """The connectivity test event VAST fires when a notification is saved.
+
+    It is not the Records envelope, and it must not look like a fault.
+    """
+
+    TEST_EVENT = {
+        "Service": "Vast S3",
+        "Event": "s3:TestEvent",
+        "Time": "2026-08-31T18:00:00.123456Z",
+        "Bucket": "demo-data",
+        "RequestId": "0123456789ABCDEF",
+        "HostId": "FEDCBA9876543210",
+    }
+
+    def test_it_produces_one_row(self):
+        self.assertEqual(len(flatten(self.TEST_EVENT)), 1)
+
+    def test_the_event_name_is_carried_across(self):
+        self.assertEqual(flatten(self.TEST_EVENT)[0].event_name, "s3:TestEvent")
+
+    def test_the_bucket_is_carried_across(self):
+        self.assertEqual(flatten(self.TEST_EVENT)[0].bucket, "demo-data")
+
+    def test_the_time_is_carried_across(self):
+        self.assertEqual(
+            flatten(self.TEST_EVENT)[0].event_time,
+            dt.datetime(2026, 8, 31, 18, 0, 0, 123456, tzinfo=dt.timezone.utc),
+        )
+
+    def test_it_has_no_object(self):
+        """A test event refers to no object, so those columns stay null."""
+        row = flatten(self.TEST_EVENT)[0]
+        self.assertIsNone(row.object_key)
+        self.assertIsNone(row.object_size)
+        self.assertIsNone(row.object_etag)
+
+    def test_the_raw_payload_is_still_preserved_verbatim(self):
+        row = flatten(self.TEST_EVENT)[0]
+        self.assertEqual(json.loads(row.raw_event), self.TEST_EVENT)
+
+    def test_a_records_payload_is_never_treated_as_a_test_event(self):
+        event = {"Service": "Vast S3", "Event": "s3:TestEvent", "Records": [{"s3": {}}]}
+        self.assertIsNone(flatten(event)[0].event_name)
+
+    def test_an_unrelated_object_is_not_mistaken_for_a_test_event(self):
+        for payload in (
+            {"Event": "something", "Service": "not a storage service"},
+            {"Service": "Vast S3"},
+            {"Event": "s3:TestEvent"},
+            {"Service": "Vast S3", "Event": "   "},
+        ):
+            with self.subTest(payload=payload):
+                rows = flatten(payload)
+                self.assertEqual(len(rows), 1)
 
 
 class TimestampTestCase(unittest.TestCase):

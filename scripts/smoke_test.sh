@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 #
-# End-to-end smoke test for the local Iceberg demo environment.
+# End-to-end smoke test for the VAST S3 -> Apache Iceberg demo.
 #
-# Deliberately SEPARATE from the unit test suite: this one needs Docker, and
-# `python3 -m unittest discover -s tests` must never need anything but Python.
+# Deliberately SEPARATE from the unit test suite: this one needs Docker and a
+# reachable broker, and `python3 -m unittest discover -s tests` must never need
+# anything but Python.
 #
+#     set -a; . ./docker/demo.env; set +a
 #     ./scripts/smoke_test.sh
 #
-# It brings the stack up if it is not already running, records the current row
-# count, publishes synthetic S3 events, runs the consumer until they are all
-# written, and checks that the row count grew by exactly that many rows and that
-# a new Iceberg snapshot was created. Leaves the stack running so you can poke at
-# it; pass --down to tear it down (and delete the data) at the end.
+# It records the current row count, publishes synthetic S3 events onto the
+# configured topic, runs the consumer until they are written, and checks that
+# the row count grew by exactly that many rows, that new Iceberg snapshots were
+# created, and that the Parquet and Iceberg metadata files exist in the
+# warehouse bucket. Leaves the stack running; pass --down to stop it after.
+#
+# NOTE: this publishes SYNTHETIC events onto the configured Kafka topic, so the
+# rows it creates are test rows. Run scripts/demo_reset.sh --confirm afterwards
+# to return the table to a clean baseline before a customer sees it.
 #
 # Requires: docker, and a Python environment with requirements.txt AND
 # requirements-iceberg.txt installed.
@@ -22,7 +28,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 COMPOSE="docker compose -f docker/docker-compose.yml"
-CONFIG="s3_consumer_config.local-iceberg.json"
+CONFIG="${CONFIG:-s3_consumer_config.json}"
+NAMESPACE="${ICEBERG_NAMESPACE:-s3_events}"
+TABLE="${ICEBERG_TABLE:-object_events}"
+TOPIC="${VAST_KAFKA_TOPIC:-s3-events}"
+BROKER="${VAST_KAFKA_BROKER:-localhost:19092}"
 PYTHON="${PYTHON:-python3}"
 EVENT_COUNT="${EVENT_COUNT:-40}"
 TEARDOWN=0
@@ -38,11 +48,11 @@ trino_query() {
 }
 
 count_rows() {
-    trino_query "SELECT count(*) FROM iceberg.s3_events.object_events" | tr -d '"' | tail -1
+    trino_query "SELECT count(*) FROM iceberg.$NAMESPACE.$TABLE" | tr -d '"' | tail -1
 }
 
 count_snapshots() {
-    trino_query 'SELECT count(*) FROM iceberg.s3_events."object_events$snapshots"' | tr -d '"' | tail -1
+    trino_query "SELECT count(*) FROM iceberg.$NAMESPACE.\"$TABLE\$snapshots\"" | tr -d '"' | tail -1
 }
 
 # --------------------------------------------------------------------------- #
@@ -61,7 +71,7 @@ pass "confluent-kafka and pyiceberg are importable ($PYTHON)"
 step "Bringing the stack up"
 # --------------------------------------------------------------------------- #
 
-$COMPOSE up -d --wait
+$COMPOSE up -d --wait >/dev/null
 pass "all containers healthy"
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +92,7 @@ step "Publishing $EVENT_COUNT synthetic S3 events"
 # --------------------------------------------------------------------------- #
 
 $PYTHON scripts/publish_test_events.py \
+    --bootstrap-servers "$BROKER" --topic "$TOPIC" \
     --count "$EVENT_COUNT" --interval 0 --well-formed-only --seed 1 \
     || fail "could not publish events"
 pass "$EVENT_COUNT events published"
@@ -145,17 +156,25 @@ pass "every well-formed event was flattened with a bucket name"
 step "Verifying the object-store layout"
 # --------------------------------------------------------------------------- #
 
-LAYOUT=$($COMPOSE exec -T minio mc ls --recursive local/warehouse/ 2>/dev/null \
-    || $COMPOSE exec -T minio sh -c 'mc alias set l http://localhost:9000 minioadmin minioadmin >/dev/null && mc ls --recursive l/warehouse/')
+# Read the physical file list out of Iceberg's own metadata table. That proves
+# the same thing as listing the bucket, without needing object-store
+# credentials or a client in this script.
+FILES=$(trino_query "SELECT file_path FROM iceberg.$NAMESPACE.\"$TABLE\$files\"")
 
-grep -q "metadata.json" <<<"$LAYOUT" || fail "no Iceberg metadata.json in the warehouse"
-pass "Iceberg metadata.json present"
-grep -q "\.avro" <<<"$LAYOUT" || fail "no Avro manifest files in the warehouse"
-pass "Avro manifest files present"
-grep -q "\.parquet" <<<"$LAYOUT" || fail "no Parquet data files in the warehouse"
-pass "Parquet data files present"
-grep -q "ingest_time_day=" <<<"$LAYOUT" || fail "no partition directory in the warehouse"
+echo "$FILES" | grep -q "\.parquet" || fail "no Parquet data files in the warehouse"
+pass "Parquet data files present in the warehouse"
+
+echo "$FILES" | grep -q "ingest_time_day=" || fail "no partition directory in the warehouse"
 pass "hidden partitioning visible as ingest_time_day=..."
+
+MANIFESTS=$(trino_query "SELECT count(*) FROM iceberg.$NAMESPACE.\"$TABLE\$manifests\"" | tr -d '"' | tail -1)
+[ "${MANIFESTS:-0}" -gt 0 ] || fail "no Iceberg manifest files"
+pass "Iceberg manifests present ($MANIFESTS)"
+
+WAREHOUSE_PREFIX="${ICEBERG_WAREHOUSE:-s3://}"
+echo "$FILES" | grep -q "^\"\?${WAREHOUSE_PREFIX%/}" \
+    || fail "data files are not under $WAREHOUSE_PREFIX"
+pass "data files live under $WAREHOUSE_PREFIX"
 
 # --------------------------------------------------------------------------- #
 step "Verifying the Iceberg-disabled path still works"
@@ -176,7 +195,6 @@ pass "--no-iceberg never contacts the catalog"
 # A config with no iceberg section at all must look exactly as it did before
 # Iceberg support existed: not one line mentioning it.
 PLAIN_CONFIG=$(mktemp -t plain_config.XXXXXX).json
-#PLAIN_CONFIG=$(mktemp -t plain_config).json
 $PYTHON - "$CONFIG" "$PLAIN_CONFIG" <<'PYEOF'
 import json, sys
 document = json.load(open(sys.argv[1]))

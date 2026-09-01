@@ -5,10 +5,17 @@ AWS-compatible shape:
 
 .. code-block:: json
 
-    {"Records": [{"eventName": "ObjectCreated:Put",
-                  "eventTime": "2026-01-01T09:03:41Z",
+    {"Records": [{"eventName": "s3:ObjectCreated:Put",
+                  "eventSource": "vast:s3",
+                  "eventTime": "2026-01-01T09:03:41.859365Z",
                   "s3": {"bucket": {"name": "demo-data"},
                          "object": {"key": "hello.txt", "size": 12, "eTag": "..."}}}]}
+
+Note the two VAST-specific details, both confirmed against VAST's published
+record format: ``eventName`` carries an ``s3:`` prefix, and ``eventSource`` is
+``vast:s3`` rather than ``aws:s3``. Nothing here filters on either value - the
+strings are stored as they arrive - but anything downstream that matches on them
+needs to know.
 
 One message can therefore carry several records, and each record becomes one
 row. Nothing here assumes any particular field is present: the exact payload
@@ -185,6 +192,42 @@ def parse_timestamp(value: Any) -> dt.datetime | None:
     return parsed.astimezone(dt.timezone.utc)
 
 
+def _as_vast_test_event(event: Any) -> dict[str, Any] | None:
+    """Recognise the connectivity test event VAST fires on a new notification.
+
+    Saving an S3 bucket notification makes VAST immediately publish a test event
+    to prove the wiring works. It is deliberately *not* the ``Records`` envelope
+    of a real object event::
+
+        {"Service": "Vast S3", "Event": "s3:TestEvent", "Time": "...",
+         "Bucket": "...", "RequestId": "...", "HostId": "..."}
+
+    Without this, it would flatten into a row with every S3 column null, which
+    looks like a fault during a demo. Mapping it onto the normal columns makes
+    the first row in a fresh table self-explanatory instead.
+    """
+    if not isinstance(event, dict):
+        return None
+    if "Records" in event or "records" in event:
+        return None
+
+    name = event.get("Event")
+    service = event.get("Service")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if not isinstance(service, str) or "s3" not in service.lower():
+        return None
+
+    record: dict[str, Any] = {"eventName": name, "eventSource": service}
+    bucket = event.get("Bucket")
+    if isinstance(bucket, str) and bucket.strip():
+        record["s3"] = {"bucket": {"name": bucket}}
+    when = event.get("Time")
+    if when is not None:
+        record["eventTime"] = when
+    return record
+
+
 def _records_of(event: Any) -> list[Any]:
     """The list of S3 records in a decoded payload.
 
@@ -199,6 +242,11 @@ def _records_of(event: Any) -> list[Any]:
                 # An explicit but empty Records list means "no records", which is
                 # different from "this payload has no Records key".
                 return value
+
+        test_event = _as_vast_test_event(event)
+        if test_event is not None:
+            return [test_event]
+
         return [event]
     return [event]
 

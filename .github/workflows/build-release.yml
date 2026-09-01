@@ -58,12 +58,27 @@ jobs:
           OUT=$(./dist/s3_event_consumer --config s3_consumer_config.example.json 2>&1 || true)
           grep -q 'still contains placeholders' <<<"$OUT"
 
-          # The shipped example keeps iceberg disabled, so reaching that error at
-          # all proves the binary does not need PyIceberg for the default path.
-          # With Iceberg enabled it must fail with the actionable message rather
-          # than a bare ModuleNotFoundError.
-          ! ./dist/s3_event_consumer --config s3_consumer_config.local-iceberg.json --check
-          OUT=$(./dist/s3_event_consumer --config s3_consumer_config.local-iceberg.json --check 2>&1 || true)
+          # The VAST demo config enables Iceberg and reads every value from the
+          # environment. Supply throwaway values so config loading succeeds and
+          # the run reaches the sink, which is the thing being tested: the
+          # standalone binary must fail with the actionable PyIceberg message
+          # rather than a bare ModuleNotFoundError.
+          export VAST_KAFKA_BROKER=127.0.0.1:9092 VAST_KAFKA_TOPIC=ci VAST_KAFKA_GROUP=ci
+          export ICEBERG_NAMESPACE=ci_ns ICEBERG_TABLE=ci_table
+          export ICEBERG_CATALOG_URI_HOST=http://127.0.0.1:8181
+          export ICEBERG_WAREHOUSE=s3://ci-warehouse/
+          export VAST_S3_ENDPOINT=http://127.0.0.1:9000 VAST_S3_REGION=us-east-1
+          export VAST_S3_ACCESS_KEY=ci-not-a-real-key VAST_S3_SECRET_KEY=ci-not-a-real-secret
+          # Throwaway values so config loading succeeds and the run reaches the
+          # Iceberg sink - see the Linux job for why.
+          export VAST_KAFKA_BROKER=127.0.0.1:9092 VAST_KAFKA_TOPIC=ci VAST_KAFKA_GROUP=ci
+          export ICEBERG_NAMESPACE=ci_ns ICEBERG_TABLE=ci_table
+          export ICEBERG_CATALOG_URI_HOST=http://127.0.0.1:8181
+          export ICEBERG_WAREHOUSE=s3://ci-warehouse/
+          export VAST_S3_ENDPOINT=http://127.0.0.1:9000 VAST_S3_REGION=us-east-1
+          export VAST_S3_ACCESS_KEY=ci-not-a-real-key VAST_S3_SECRET_KEY=ci-not-a-real-secret
+          ! ./dist/s3_event_consumer --config s3_consumer_config.vast-demo.example.json --check
+          OUT=$(./dist/s3_event_consumer --config s3_consumer_config.vast-demo.example.json --check 2>&1 || true)
           grep -q 'PyIceberg is not installed' <<<"$OUT"
 
           # Informational only - never fail the build on these.
@@ -109,8 +124,8 @@ jobs:
         run: |
           ./dist/s3_event_consumer --help
           ! ./dist/s3_event_consumer --config s3_consumer_config.example.json
-          ! ./dist/s3_event_consumer --config s3_consumer_config.local-iceberg.json --check
-          OUT=$(./dist/s3_event_consumer --config s3_consumer_config.local-iceberg.json --check 2>&1 || true)
+          ! ./dist/s3_event_consumer --config s3_consumer_config.vast-demo.example.json --check
+          OUT=$(./dist/s3_event_consumer --config s3_consumer_config.vast-demo.example.json --check 2>&1 || true)
           grep -q 'PyIceberg is not installed' <<<"$OUT"
           file ./dist/s3_event_consumer
           echo "executable size: $(stat -f%z ./dist/s3_event_consumer) bytes"

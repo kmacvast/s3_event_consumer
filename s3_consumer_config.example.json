@@ -5,7 +5,7 @@
     "auto.offset.reset": "earliest"
   },
   "topic": "<KAFKA_TOPIC>",
-  "_comment_iceberg": "OPTIONAL. Delete this whole 'iceberg' section, or set enabled to false, to keep the original console-only behaviour. Everything under 'catalog' is passed straight through to PyIceberg. Any value written as 'env:NAME' is read from that environment variable at startup, so real access keys never need to be written to a file. When enabled, Kafka offsets are committed only after the matching records are durable in Iceberg (at-least-once; a replay can duplicate rows). See README.md.",
+  "_comment_iceberg": "OPTIONAL. Delete this whole 'iceberg' section, or set enabled to false, to keep the original console-only behaviour. Everything under 'catalog' is passed straight through to PyIceberg. Any string value written as 'env:NAME' is read from that environment variable at startup - this works for kafka_config values, topic, namespace, table and every catalog property, so no credential need ever be written to a file. 's3.force-virtual-addressing' false means path-style bucket addressing, which is what VAST S3 expects. When enabled, Kafka offsets are committed only after the matching records are durable in Iceberg (at-least-once; a replay can duplicate rows). See README.md.",
   "iceberg": {
     "enabled": false,
     "namespace": "s3_events",
@@ -23,7 +23,7 @@
       "s3.access-key-id": "env:VAST_S3_ACCESS_KEY_ID",
       "s3.secret-access-key": "env:VAST_S3_SECRET_ACCESS_KEY",
       "s3.region": "us-east-1",
-      "s3.path-style-access": true
+      "s3.force-virtual-addressing": false
     }
   }
 }

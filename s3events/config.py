@@ -115,6 +115,24 @@ class AppConfig:
         return self.iceberg is not None
 
 
+def safe_uri(uri: str) -> str:
+    """A URI with any embedded ``user:password@`` credentials masked.
+
+    Catalog endpoints are logged at startup and shown on screen during demos, so
+    a URI that happens to carry basic-auth credentials must not leak with it.
+    """
+    if not isinstance(uri, str):
+        return uri
+    scheme, separator, rest = uri.partition("://")
+    if not separator or "@" not in rest:
+        return uri
+    authority, _, tail = rest.partition("@")
+    user, has_password, _ = authority.partition(":")
+    if not has_password:
+        return uri
+    return f"{scheme}://{user}:{REDACTED}@{tail}"
+
+
 def is_secret_name(name: str) -> bool:
     """True when a property name suggests its value is a credential."""
     lowered = name.lower()
@@ -163,18 +181,32 @@ def _read_document(path: Path) -> dict[str, Any]:
 
 
 def _parse_kafka(document: dict[str, Any], path: Path) -> tuple[dict[str, Any], str]:
-    kafka_conf = document.get("kafka_config")
-    if not isinstance(kafka_conf, dict) or not kafka_conf:
+    raw_kafka_conf = document.get("kafka_config")
+    if not isinstance(raw_kafka_conf, dict) or not raw_kafka_conf:
         raise ConfigError(
             f"{path}: 'kafka_config' must be a non-empty JSON object of librdkafka "
             f"settings (see {EXAMPLE_CONFIG_FILENAME})."
         )
+
+    # Resolve "env:NAME" references before anything is validated, so a broker
+    # list or a SASL password can come from the environment rather than being
+    # written into a file. Non-string values pass through untouched: librdkafka
+    # accepts numbers and booleans for some settings.
+    kafka_conf: dict[str, Any] = {}
+    for key, value in raw_kafka_conf.items():
+        if isinstance(value, str):
+            kafka_conf[key] = resolve_env_reference(value, f"{path}: 'kafka_config.{key}'")
+        else:
+            kafka_conf[key] = value
 
     topic = document.get("topic")
     if not isinstance(topic, str) or not topic.strip():
         raise ConfigError(
             f"{path}: 'topic' must be a non-empty string naming the Kafka topic to consume."
         )
+    topic = resolve_env_reference(topic.strip(), f"{path}: 'topic'")
+    if not topic.strip():
+        raise ConfigError(f"{path}: 'topic' resolved to an empty value.")
 
     for key in ("bootstrap.servers", "group.id"):
         value = kafka_conf.get(key)
@@ -208,7 +240,9 @@ def _identifier(section: dict[str, Any], key: str, default: str, where: str) -> 
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{where}.{key} must be a non-empty string.")
 
-    name = value.strip()
+    name = resolve_env_reference(value.strip(), f"{where}.{key}").strip()
+    if not name:
+        raise ConfigError(f"{where}.{key} resolved to an empty value.")
     if "<" in name or ">" in name:
         raise ConfigError(
             f"{where}.{key} still contains placeholders ({name!r}). Replace them with a real name."

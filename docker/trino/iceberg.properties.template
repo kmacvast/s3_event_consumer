@@ -1,0 +1,23 @@
+# Trino Iceberg connector, pointed at the same Iceberg REST catalog and the
+# same VAST S3 warehouse that s3_event_consumer writes to.
+#
+# This is a TEMPLATE. entrypoint.sh expands the ${...} references from the
+# environment into /etc/trino/catalog/iceberg.properties at container start,
+# so no VAST endpoint or credential is ever stored in a file or an image.
+
+connector.name=iceberg
+
+iceberg.catalog.type=rest
+iceberg.rest-catalog.uri=${ICEBERG_CATALOG_URI}
+iceberg.rest-catalog.warehouse=${ICEBERG_WAREHOUSE}
+
+# Trino's native S3 filesystem, talking to VAST S3.
+fs.native-s3.enabled=true
+s3.endpoint=${VAST_S3_ENDPOINT}
+s3.region=${VAST_S3_REGION}
+s3.aws-access-key=${VAST_S3_ACCESS_KEY}
+s3.aws-secret-key=${VAST_S3_SECRET_KEY}
+
+# VAST S3 addresses buckets by path, not by DNS subdomain. Virtual-host style
+# would resolve bucket.s3.your-vast.example, which does not exist.
+s3.path-style-access=true

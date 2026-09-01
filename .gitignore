@@ -224,13 +224,24 @@ __marimo__/
 # references over literal credentials for anything real.
 s3_consumer_config.json
 
-# Any other local config variant. s3_consumer_config.example.json and
-# s3_consumer_config.local-iceberg.json are committed on purpose - the first
-# holds only placeholders, the second only the throwaway credentials of the
-# loopback-only Docker Compose sandbox - so they are re-included below.
+# Any other local config variant. Only the shipped *.example.json files are
+# committed, and they contain nothing but placeholders and "env:NAME"
+# references, so they are re-included below.
 s3_consumer_config.*.json
 !s3_consumer_config.example.json
-!s3_consumer_config.local-iceberg.json
+!s3_consumer_config.vast-demo.example.json
+
+# Customer-demo environment values: VAST endpoints, bucket names and S3 access
+# keys. Start from docker/demo.env.example. Never commit the filled-in copy.
+demo.env
+docker/demo.env
+
+# Customer-facing demo artifacts (runbook, presentation, narrative) are built
+# and kept OUTSIDE this repository on purpose. The one exception is the VAST
+# deployment guide that has always shipped with the repo.
+*.docx
+*.pptx
+!docs/Deploying-a-Kafka-Event-Broker-in-VAST-5.4.docx
 
 # macOS / editor artifacts
 .DS_Store

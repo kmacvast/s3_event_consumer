@@ -333,23 +333,80 @@ class ShippedConfigFileTestCase(unittest.TestCase):
                         f"{name} must be a placeholder or an env: reference, got {value!r}",
                     )
 
-    def test_local_demo_config_loads_and_enables_iceberg(self):
-        config = configmod.load_app_config(self.ROOT / "s3_consumer_config.local-iceberg.json")
+    VAST_DEMO_CONFIG = "s3_consumer_config.vast-demo.example.json"
+
+    # Every value the VAST demo config expects from the environment.
+    VAST_DEMO_ENV = {
+        "VAST_KAFKA_BROKER": "10.9.9.1:9092,10.9.9.2:9092",
+        "VAST_KAFKA_TOPIC": "s3-events",
+        "VAST_KAFKA_GROUP": "vast-iceberg-demo",
+        "ICEBERG_NAMESPACE": "s3_events",
+        "ICEBERG_TABLE": "object_events",
+        "ICEBERG_CATALOG_URI_HOST": "http://localhost:8181",
+        "ICEBERG_WAREHOUSE": "s3://iceberg-warehouse/",
+        "VAST_S3_ENDPOINT": "https://s3.vast.example",
+        "VAST_S3_ACCESS_KEY": "AKIAEXAMPLEKEY",
+        "VAST_S3_SECRET_KEY": "examplesecret",
+        "VAST_S3_REGION": "us-east-1",
+    }
+
+    def load_vast_demo_config(self):
+        with mock.patch.dict(os.environ, self.VAST_DEMO_ENV):
+            return configmod.load_app_config(self.ROOT / self.VAST_DEMO_CONFIG)
+
+    def test_vast_demo_config_resolves_entirely_from_the_environment(self):
+        config = self.load_vast_demo_config()
         self.assertTrue(config.iceberg_enabled)
+        self.assertEqual(config.kafka_config["bootstrap.servers"], "10.9.9.1:9092,10.9.9.2:9092")
+        self.assertEqual(config.kafka_config["group.id"], "vast-iceberg-demo")
+        self.assertEqual(config.topic, "s3-events")
         self.assertEqual(config.iceberg.table_identifier, "s3_events.object_events")
         self.assertEqual(config.iceberg.catalog_properties["uri"], "http://localhost:8181")
+        self.assertEqual(
+            config.iceberg.catalog_properties["s3.endpoint"], "https://s3.vast.example"
+        )
 
-    def test_local_demo_config_only_ever_points_at_localhost(self):
-        """It ships with credentials, so it must be unusable against anything real."""
-        config = configmod.load_app_config(self.ROOT / "s3_consumer_config.local-iceberg.json")
-        endpoints = [
-            config.kafka_config["bootstrap.servers"],
-            config.iceberg.catalog_properties["uri"],
-            config.iceberg.catalog_properties["s3.endpoint"],
-        ]
-        for endpoint in endpoints:
-            with self.subTest(endpoint=endpoint):
-                self.assertIn("localhost", endpoint)
+    def test_vast_demo_config_contains_no_literal_credentials(self):
+        """Every secret must be an env: reference, never a value in the file."""
+        document = json.loads((self.ROOT / self.VAST_DEMO_CONFIG).read_text(encoding="utf-8"))
+        for name, value in document["iceberg"]["catalog"].items():
+            if configmod.is_secret_name(name):
+                with self.subTest(name=name):
+                    self.assertTrue(
+                        isinstance(value, str)
+                        and value.startswith(configmod.ENV_REFERENCE_PREFIX),
+                        f"{name} must be an env: reference, got {value!r}",
+                    )
+
+    def test_vast_demo_config_hardcodes_no_endpoint(self):
+        """Nothing in the shipped file may name a host: it is all env-driven."""
+        text = (self.ROOT / self.VAST_DEMO_CONFIG).read_text(encoding="utf-8")
+        document = json.loads(text)
+        for value in (
+            document["kafka_config"]["bootstrap.servers"],
+            document["topic"],
+            document["iceberg"]["catalog"]["uri"],
+            document["iceberg"]["catalog"]["warehouse"],
+            document["iceberg"]["catalog"]["s3.endpoint"],
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(value.startswith(configmod.ENV_REFERENCE_PREFIX))
+
+    def test_vast_demo_config_uses_path_style_addressing(self):
+        """VAST S3 addresses buckets by path; virtual-host style would not resolve.
+
+        The property name matters: PyIceberg has no 's3.path-style-access', so
+        writing that key would silently do nothing.
+        """
+        catalog = self.load_vast_demo_config().iceberg.catalog_properties
+        self.assertEqual(catalog["s3.force-virtual-addressing"], "false")
+        self.assertNotIn("s3.path-style-access", catalog)
+
+    def test_vast_demo_config_fails_loudly_when_the_environment_is_missing(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(configmod.ConfigError) as ctx:
+                configmod.load_app_config(self.ROOT / self.VAST_DEMO_CONFIG)
+        self.assertIn("VAST_KAFKA_BROKER", str(ctx.exception))
 
 
 if __name__ == "__main__":

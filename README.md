@@ -90,7 +90,7 @@ flowchart LR
     E --> F["s3_event_consumer"]
     F --> G["console<br/><i>stdout, always on</i>"]
     F -.->|optional| H["Apache Iceberg table"]
-    H -.-> I["S3-compatible warehouse<br/>VAST S3 / MinIO"]
+    H -.-> I["VAST S3<br/>Iceberg warehouse bucket"]
     I -.-> J["query engine + GUI<br/>Trino / SQLPad"]
 ```
 
@@ -119,6 +119,13 @@ python3 s3_event_consumer.py
 Requires Python 3.9 or newer (tested on 3.9, 3.10, 3.11, 3.12 and 3.13).
 Dependencies are `confluent-kafka` (the Kafka client) and `pygments` (JSON
 syntax highlighting).
+
+`confluent-kafka` is pinned to `>=2.4,<2.9` deliberately. VAST documents support
+for the **Confluent Kafka Python client 2.4 – 2.8** against the Kafka-compatible
+Event Broker, and states that `aiokafka` is not supported
+([docs](https://kb.vastdata.com/documentation/docs/kafka-protocol-support.md)).
+Newer clients may well work, but a customer demo is the wrong place to find out;
+widen the pin only after testing against your own cluster.
 
 For the optional Iceberg sink, add:
 
@@ -197,7 +204,8 @@ When you `PUT` an object into the watched bucket, the payload is printed to
 {
   "Records": [
     {
-      "eventName": "ObjectCreated:Put",
+      "eventSource": "vast:s3",
+      "eventName": "s3:ObjectCreated:Put",
       "s3": {
         "bucket": { "name": "demo-data" },
         "object": { "key": "hello.txt" }
@@ -207,9 +215,19 @@ When you `PUT` an object into the watched bucket, the payload is printed to
 }
 ```
 
-The exact payload schema comes from VAST and may vary by release. Because
-payloads go to stdout and logs to stderr, `./s3_event_consumer > events.log`
-captures only the events, without colour escapes.
+VAST prefixes `eventName` with `s3:` and reports `eventSource` as `vast:s3`
+([docs](https://kb.vastdata.com/documentation/docs/s3-event-record-format.md)).
+The exact payload schema comes from VAST and may vary by release, so nothing
+here assumes any field is present.
+
+Saving a bucket notification also makes VAST publish a one-off connectivity test
+event — `{"Service": "Vast S3", "Event": "s3:TestEvent", ...}`, without a
+`Records` envelope. That is recognised and mapped onto the same fields rather
+than being treated as an unparseable payload.
+
+Because payloads go to stdout and logs to stderr,
+`./s3_event_consumer > events.log` captures only the events, without colour
+escapes.
 
 Press **Ctrl-C** to stop; the consumer closes the Kafka consumer cleanly and
 exits with status 0.
@@ -233,15 +251,31 @@ earlier point. Many engines (Trino, Spark, DuckDB, Flink, PyIceberg) read and
 write the same table, so the data is not locked to any one of them.
 
 Here, that means the stream of S3 events becomes a table you can run SQL
-against, stored on S3-compatible object storage — MinIO locally, VAST S3
-eventually.
+against, with its Parquet data files and Iceberg metadata stored in a VAST S3
+bucket.
 
 ### How it works
 
 ```
-Kafka -> decode JSON -> console sink   (always on, unchanged)
-                     -> Iceberg sink   (buffered, optional)
+VAST S3 PUT -> S3 event notification -> VAST Event Broker (Kafka topic)
+  -> s3_event_consumer -> decode JSON -> console sink   (always on, unchanged)
+                                      -> Iceberg sink   (buffered, optional)
 ```
+
+The Iceberg sink writes Parquet data files into a **VAST S3 warehouse bucket**
+and registers each commit with an **Iceberg REST catalog**. Trino and SQLPad
+read the same catalog and the same bucket, and are never a dependency of the
+consumer itself.
+
+Two pieces are not VAST: the REST catalog and the query layer. VAST publishes no
+Iceberg-specific documentation and provides no Iceberg catalog of its own, so an
+external REST catalog is the expected approach — VAST supplies the S3 storage,
+and the catalog is a separate service you run alongside it. The catalog and
+query containers are in `docker/docker-compose.yml`.
+
+The warehouse bucket must be a **different bucket** from the one carrying the
+event notification. Writing the warehouse into the watched bucket would make the
+demo generate events about its own writes, without end.
 
 Each event is flattened into one row per S3 record and buffered. The buffer is
 written as a single Iceberg append — one snapshot — when either `batch_size`
@@ -306,7 +340,7 @@ The default. Either leave the section out entirely:
 
 ```json
 {
-  "kafka_config": { "bootstrap.servers": "vip:9092", "group.id": "demo" },
+  "kafka_config": { "bootstrap.servers": "<KAFKA_VIP>:<KAFKA_PORT>", "group.id": "demo" },
   "topic": "s3-events"
 }
 ```
@@ -320,33 +354,61 @@ python3 s3_event_consumer.py --no-iceberg
 A disabled section is not validated, so a half-finished one will not block
 startup, and PyIceberg is never imported.
 
-### Running with local Iceberg
+### Running the Iceberg demo against VAST
 
-A complete local stack — MinIO, an Iceberg REST catalog, Trino and a browser SQL
-UI, plus a Kafka broker so the whole thing runs on a laptop:
+The object store and the event broker are VAST — they are not containers.
+`docker/docker-compose.yml` supplies only the Iceberg REST catalog, Trino and
+SQLPad, and every VAST-specific value reaches them from the environment, so
+nothing is hardcoded and no credential is stored in the repository.
 
 ```bash
+cp docker/demo.env.example docker/demo.env
+# edit docker/demo.env with your VAST endpoints, buckets, topic and keys
+set -a; . ./docker/demo.env; set +a
+```
+
+`docker/demo.env` is git-ignored and is the single source of truth for the
+containers, the consumer and the scripts alike. Then:
+
+```bash
+cp s3_consumer_config.vast-demo.example.json s3_consumer_config.json
 docker compose -f docker/docker-compose.yml up -d --wait
-```
-
-```bash
 pip install -r requirements.txt -r requirements-iceberg.txt
-python3 s3_event_consumer.py --config s3_consumer_config.local-iceberg.json
+./scripts/demo_preflight.sh
+python3 s3_event_consumer.py --config s3_consumer_config.json
 ```
 
-Then, in another terminal, generate events:
+`s3_consumer_config.vast-demo.example.json` is committed and ready to copy:
+every value in it is an `env:NAME` reference, so the file itself contains no
+endpoint, no bucket name and no credential.
+
+Then write an object into the watched bucket and let VAST publish the event:
 
 ```bash
-python3 scripts/publish_test_events.py --count 40
+aws s3api put-object \
+  --endpoint-url "$VAST_S3_ENDPOINT" \
+  --bucket "$VAST_SOURCE_BUCKET" \
+  --key demo/readings.csv \
+  --body ./readings.csv
 ```
 
-`s3_consumer_config.local-iceberg.json` is committed and ready to run. It holds
-the local sandbox's throwaway MinIO credentials and only ever points at
-`localhost`.
+For a larger burst without writing hundreds of objects, synthetic VAST-shaped
+events can be published straight onto the topic:
 
-The full walkthrough, including troubleshooting, is
-**[docs/iceberg-demo.md](docs/iceberg-demo.md)**. To run and verify the whole
-thing unattended:
+```bash
+python3 scripts/publish_test_events.py \
+  --bootstrap-servers "$VAST_KAFKA_BROKER" \
+  --topic "$VAST_KAFKA_TOPIC" \
+  --count 40
+```
+
+You also need the VAST side prepared: an Event Broker, a topic (VAST does not
+support automatic topic creation, so create it explicitly), and an S3 bucket
+notification on the source view pointing at that topic. The full walkthrough —
+VAST preparation, configuration, the demo itself and troubleshooting by layer —
+is **[docs/iceberg-demo.md](docs/iceberg-demo.md)**.
+
+To run and verify the whole thing unattended:
 
 ```bash
 ./scripts/smoke_test.sh
@@ -357,37 +419,45 @@ thing unattended:
 Everything under `catalog` is passed straight through to PyIceberg, exactly as
 everything under `kafka_config` is passed to librdkafka.
 
+This is `s3_consumer_config.vast-demo.example.json` as shipped — every value is
+an `env:NAME` reference resolved from the environment at startup, so no
+endpoint, bucket or credential is written to the file at all:
+
 ```json
 {
   "kafka_config": {
-    "bootstrap.servers": "<KAFKA_VIP_1>:<KAFKA_PORT>",
-    "group.id": "s3-event-demo",
+    "bootstrap.servers": "env:VAST_KAFKA_BROKER",
+    "group.id": "env:VAST_KAFKA_GROUP",
     "auto.offset.reset": "earliest"
   },
-  "topic": "<KAFKA_TOPIC>",
+  "topic": "env:VAST_KAFKA_TOPIC",
 
   "iceberg": {
     "enabled": true,
-    "namespace": "s3_events",
-    "table": "object_events",
-    "batch_size": 100,
-    "flush_interval_seconds": 10,
+    "namespace": "env:ICEBERG_NAMESPACE",
+    "table": "env:ICEBERG_TABLE",
+    "batch_size": 25,
+    "flush_interval_seconds": 5,
     "create_if_missing": true,
     "max_flush_attempts": 5,
     "retry_backoff_seconds": 5,
     "catalog": {
       "type": "rest",
-      "uri": "<ICEBERG_REST_CATALOG_URL>",
-      "warehouse": "s3://<WAREHOUSE_BUCKET>/",
-      "s3.endpoint": "<VAST_S3_ENDPOINT_URL>",
-      "s3.access-key-id": "env:VAST_S3_ACCESS_KEY_ID",
-      "s3.secret-access-key": "env:VAST_S3_SECRET_ACCESS_KEY",
-      "s3.region": "us-east-1",
-      "s3.path-style-access": true
+      "uri": "env:ICEBERG_CATALOG_URI_HOST",
+      "warehouse": "env:ICEBERG_WAREHOUSE",
+      "s3.endpoint": "env:VAST_S3_ENDPOINT",
+      "s3.access-key-id": "env:VAST_S3_ACCESS_KEY",
+      "s3.secret-access-key": "env:VAST_S3_SECRET_KEY",
+      "s3.region": "env:VAST_S3_REGION",
+      "s3.force-virtual-addressing": false
     }
   }
 }
 ```
+
+Literal values work everywhere too — `env:` is optional per value, not a
+required style. `s3_consumer_config.example.json` shows the same section with
+placeholders instead.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -401,19 +471,36 @@ everything under `kafka_config` is passed to librdkafka.
 | `max_buffered_records` | `10 × batch_size` | Ceiling on unwritten records before the consumer stops rather than accumulating without bound. |
 | `catalog.type` | — | `rest` is what this project is designed and tested for. |
 | `catalog.uri` | — | The Iceberg REST catalog endpoint. |
-| `catalog.warehouse` | — | Where table data lives, e.g. `s3://bucket/prefix/`. |
+| `catalog.warehouse` | — | Where table data lives, e.g. `s3://bucket/prefix/`. Must not be the bucket carrying the event notification. |
 | `catalog.s3.*` | — | Endpoint, credentials, region and addressing for the warehouse. |
 
+**`s3.force-virtual-addressing` is `false` on purpose.** VAST S3 addresses
+buckets by path, not by DNS subdomain: virtual-hosted style would resolve
+`bucket.s3.your-vast.example`, cannot be used at all against an IP-address
+endpoint, and needs wildcard TLS certificates where it can be used
+([docs](https://kb.vastdata.com/docs/path-and-virtual-hosted-style-s3-urls)).
+There is **no** `s3.path-style-access` property in PyIceberg — a config carrying
+that key is silently ignored, which is the worst kind of wrong. Trino spells the
+same behaviour `s3.path-style-access=true`, which is correct in Trino's own
+configuration; they are different products with different property names.
+
+`s3.region` must be set even though VAST does not route on it, because SigV4
+signing requires a region string. VAST's own examples use `us-east-1`
+([docs](https://kb.vastdata.com/documentation/docs/connecting-to-the-boto3-client-interface-3)).
+
 > **Warning**
-> Any catalog value written as **`env:NAME`** is read from that environment
+> Any string value written as **`env:NAME`** is read from that environment
 > variable at startup, so real access keys never need to be written to a file.
-> Credentials are redacted from every log line the consumer writes. Your own
+> This works for `kafka_config` values, `topic`, `iceberg.namespace`,
+> `iceberg.table`, `iceberg.catalog_name` and every property under
+> `iceberg.catalog`. Credentials are redacted from every log line the consumer
+> writes, including any embedded in a catalog URI. Your own
 > `s3_consumer_config.json` stays git-ignored — never commit one with real keys.
 
 ### Querying the table
 
-Against the local stack. In the **GUI** at <http://localhost:3000> (no login;
-the connection is pre-selected), or through the Trino CLI:
+In the **GUI** at <http://localhost:3000> (no login; the `VAST S3 - Apache
+Iceberg` connection is pre-selected), or through the Trino CLI:
 
 ```bash
 docker compose -f docker/docker-compose.yml exec trino trino
@@ -469,50 +556,60 @@ FOR TIMESTAMP AS OF TIMESTAMP '2026-08-31 17:29:20 UTC';
 SELECT file_path, record_count FROM iceberg.s3_events."object_events$files";
 ```
 
-### Local MinIO versus a VAST S3 warehouse
+### What you have to supply
 
-Nothing in the application changes — only configuration.
+Nothing in the application is VAST-specific — it is configuration all the way
+down. What the demo needs from outside itself:
 
-| Setting | Local demo | VAST |
+| Piece | Where it comes from | Notes |
 | --- | --- | --- |
-| `kafka_config.bootstrap.servers` | `localhost:19092` (demo Kafka container) | Your Event Broker VIPs and port |
-| `catalog.uri` | `http://localhost:8181` (fixture container) | Your Iceberg REST catalog endpoint |
-| `catalog.warehouse` | `s3://warehouse/` | `s3://<your-bucket>/<prefix>/` |
-| `catalog.s3.endpoint` | `http://localhost:9000` (MinIO, plain HTTP) | Your VAST S3 endpoint, normally `https://` |
-| `catalog.s3.access-key-id` / `secret-access-key` | Throwaway `minioadmin` literals | `env:` references to real VAST keys |
-| `catalog.s3.path-style-access` | `true` | Usually `true` for a non-AWS endpoint |
-| `batch_size` / `flush_interval_seconds` | `25` / `5`, so a demo commits visibly often | Larger — every commit is a snapshot |
+| Event Broker VIPs **and port** | Your VAST Event Broker configuration | The listener port is not documented publicly; take it from your own cluster rather than assuming one. |
+| Kafka topic | Created by hand in VAST | Automatic topic creation is not supported. Default retention 7 days; partition count fixed at creation. |
+| S3 bucket notification | Element Store → Views → Bucket Notifications, or `eventnotification create` | Saving one makes VAST publish a connectivity test event immediately, which the consumer recognises and records. |
+| Source bucket | VAST S3 | The bucket the notification watches. |
+| Warehouse bucket | VAST S3 | Must be a **different** bucket from the source. |
+| S3 access keys | Generated per user through VMS | The only way to create them. |
+| Iceberg REST catalog | You run it | VAST publishes no Iceberg documentation and provides no catalog; `docker/docker-compose.yml` runs `apache/iceberg-rest-fixture` for the demo. It is a test fixture, not a production catalog. |
 
-The one thing that is **not** just a config swap is the catalog. MinIO is
-trivially replaceable by VAST S3, because both are S3-compatible. A REST catalog
-is a separate service that must be reachable from the consumer, and must itself
-be able to reach the warehouse. `docs/iceberg-demo.md` covers the options.
+`batch_size` 25 and `flush_interval_seconds` 5 in the demo config are chosen so
+a commit is visible within seconds. Raise both for anything else — every commit
+is a snapshot.
 
-Run `--check` before the first real run: it creates the namespace and table and
-exits, proving the whole write path before a single event is consumed.
+Run `./scripts/demo_preflight.sh` before the first real run: twenty-three checks
+across the environment, VAST S3, the Event Broker, the containers and the
+Iceberg table, with credentials masked in the output. Or run the consumer with
+`--check`, which creates the namespace and table and exits, proving the whole
+write path before a single event is consumed.
 
 ## Validation status
 
-Everything in this repository has been exercised end to end against the
-**local** Docker Compose stack. **None of it has been run against a real VAST
-cluster yet.** Read any claim about behaviour with that distinction in mind.
+Everything in this repository has been exercised end to end against a **local
+stand-in stack**, using the exact compose file that ships here and driven
+entirely by the same environment variables a real cluster would populate. **None
+of it has been run against a real VAST cluster yet.** Read any claim about
+behaviour with that distinction in mind.
 
-**LOCAL VALIDATION — COMPLETE.** Verified from empty volumes by
-`scripts/smoke_test.sh` and `scripts/outage_test.sh`: local Kafka, Iceberg REST
-catalog, S3-compatible local object storage (MinIO), the PyIceberg writer,
-Trino, SQLPad, batching, snapshots, time travel, Kafka offset semantics, catalog
-outage/recovery, and PyInstaller.
+**STAND-IN VALIDATION — COMPLETE.** 219 unit tests pass; `ruff` clean;
+`shellcheck` clean. Full smoke test: 40 events published, 40 rows written, 2
+snapshots, with Parquet files, manifests and an `ingest_time_day=` partition
+directory present in the warehouse. Outage/recovery test: catalog stopped
+mid-run — consumer exits 1, no Kafka offsets committed, no rows written; catalog
+restored — all 30 events replayed and ingested, offset advanced to 30. Preflight
+23 of 23. Reset verified, including its guard rails. PyInstaller build.
 
 **VAST LAB VALIDATION — PENDING.** Not performed, and not simulated anywhere in
-this repository: a real VAST Kafka-compatible Event Broker, real VAST-generated
-S3 event payloads, VAST S3 as the Iceberg warehouse, VAST S3
-endpoint/authentication behaviour, REST catalog connectivity from the work lab,
-the end-to-end VAST S3 PUT → Event Broker → consumer → Iceberg → query path,
-multi-event/batch behaviour on the real Event Broker, and failure/recovery
-behaviour in the VAST environment.
+this repository: a real VAST Kafka-compatible Event Broker including its
+listener port, real VAST-generated S3 event payloads, the connectivity test
+event as actually published, VAST S3 as the Iceberg warehouse, VAST S3 endpoint
+and TLS/authentication behaviour, the REST catalog writing metadata into VAST
+S3, REST catalog connectivity from the work lab, the end-to-end VAST S3 PUT →
+Event Broker → consumer → Iceberg → query path, multi-event/batch behaviour on
+the real Event Broker, failure/recovery behaviour in the VAST environment, and
+`confluent-kafka` 2.4–2.8 against the real broker.
 
-Also untested locally: **Kafka rebalance behaviour** — every test runs a single
-consumer against a single-partition topic.
+Also untested: **Kafka rebalance behaviour** — every test runs a single consumer
+against a single-partition topic, and VAST does not support cooperative
+rebalancing, so any rebalance is eager.
 
 Full breakdown in
 [docs/iceberg-demo.md](docs/iceberg-demo.md#validation-status).
@@ -603,26 +700,63 @@ does the same on native Linux and macOS runners.
 python3 -m unittest discover -s tests -v
 ```
 
-157 tests covering configuration parsing and validation (with and without the
-`iceberg` section), the message-display path including malformed payloads, event
-flattening against incomplete and structurally wrong payloads, sink dispatch and
-failure isolation, and the Iceberg sink's batching, flush-on-shutdown, table
-creation and write-failure handling.
+219 tests covering configuration parsing and validation (with and without the
+`iceberg` section), `env:NAME` resolution across every field that supports it,
+the message-display path including malformed payloads, event flattening against
+incomplete and structurally wrong payloads — including VAST's connectivity test
+event — sink dispatch and failure isolation, and the Iceberg sink's batching,
+flush-on-shutdown, table creation and write-failure handling.
 
 PyIceberg is mocked throughout, so **no live broker, no Docker, no catalog and
 no PyIceberg installation are required** — only `requirements.txt`. Three schema
 assertions skip themselves if PyIceberg is not installed.
 
-The Docker-based end-to-end test is kept separate on purpose:
+The tests that need infrastructure are kept separate on purpose. All four read
+their VAST endpoints, buckets, topic and credentials from the environment:
+
+```bash
+set -a; . ./docker/demo.env; set +a
+```
+
+**Before a demo**, check every layer:
+
+```bash
+./scripts/demo_preflight.sh
+```
+
+Twenty-three checks across the environment, the Python environment, the consumer
+configuration, VAST S3 reachability and authentication, the Event Broker, the
+containers, the catalog/Trino/SQLPad, and the Iceberg table. It never prints a
+credential — secrets are masked, endpoints and bucket names are not, because you
+need to see what you are pointed at. Read-only apart from one clearly marked
+check that creates the namespace and table; skip that with `--no-table-init`.
+
+**After a demo, or between runs**, get back to a clean baseline:
+
+```bash
+./scripts/demo_reset.sh              # dry run: prints what it would do, changes nothing
+./scripts/demo_reset.sh --confirm    # apply
+```
+
+It drops and recreates the demo table and clears the demo consumer group's
+offsets so the topic replays. `--purge-source` additionally removes the demo
+objects from the watched bucket, under the demo key prefix only. It changes
+nothing without `--confirm`, never deletes a bucket, only ever touches the one
+namespace and table named in the environment, and refuses obviously dangerous
+names such as `default`, `system` or `*`.
+
+**End to end:**
 
 ```bash
 ./scripts/smoke_test.sh
 ```
 
-It brings up the local stack, publishes events, runs the consumer, and asserts
-the row count grew by exactly the number published, that snapshots were created,
-that batching batched, that the Parquet and Iceberg metadata files exist in the
-object store, and that `--no-iceberg` still runs console-only.
+It brings up the containers, publishes synthetic events onto the configured
+topic, runs the consumer, and asserts the row count grew by exactly the number
+published, that snapshots were created, that batching batched, that the Parquet
+and Iceberg metadata files exist in the warehouse bucket, and that
+`--no-iceberg` still runs console-only. Those are **test rows** in a real table,
+so follow it with `./scripts/demo_reset.sh --confirm`.
 
 ```bash
 ./scripts/outage_test.sh
@@ -632,8 +766,9 @@ That one proves the delivery semantics: it stops the Iceberg REST catalog
 mid-run, publishes events into the outage, and asserts the consumer retries
 within its bounds, exits non-zero, commits **no** Kafka offsets and writes no
 rows — then restores the catalog and asserts every event is subsequently
-ingested. Both require Docker and `requirements-iceberg.txt`, and both are
-single-consumer, local-stack only; see
+ingested. Both require Docker, a reachable broker and
+`requirements-iceberg.txt`, and both exercise the single-consumer architecture
+only — they have not yet been run against a real VAST cluster; see
 [Validation status](#validation-status).
 
 ## License

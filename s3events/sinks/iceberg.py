@@ -1,8 +1,7 @@
 """Buffered Apache Iceberg sink.
 
-Writes flattened S3 event metadata into an Iceberg table whose data lives on
-S3-compatible storage (MinIO locally, VAST S3 eventually), through an Iceberg
-REST catalog.
+Writes flattened S3 event metadata into an Iceberg table whose data files live
+in a VAST S3 bucket, through an Iceberg REST catalog.
 
 Three design points are worth stating outright.
 
@@ -260,8 +259,43 @@ class IcebergSink:
             ) from exc
         else:
             LOG.info("Using existing Iceberg table %s at %s", identifier, table.location())
+            self._warn_about_schema_drift(table)
 
         return table
+
+    def _warn_about_schema_drift(self, table: Any) -> None:
+        """Compare an adopted table's columns with the ones this sink writes.
+
+        Rows are built against whatever schema the table already has. PyArrow
+        silently drops keys the schema does not mention and fills missing
+        columns with nulls, so a table that someone else created under the same
+        name ingests quietly wrong data. Say so loudly instead — but do not
+        refuse to run, because the operator may have added columns on purpose.
+        """
+        try:
+            actual = {field.name for field in table.schema().fields}
+        except Exception:  # noqa: BLE001 - never let a diagnostic break startup
+            return
+
+        expected = {field.name for field in build_schema().fields}
+        missing = sorted(expected - actual)
+        if missing:
+            LOG.warning(
+                "Iceberg table %s is missing column(s) this consumer writes: %s. "
+                "Those values will be discarded on every append. The table was "
+                "probably created by something else, or by an older version.",
+                self._config.table_identifier,
+                ", ".join(missing),
+            )
+
+        extra = sorted(actual - expected)
+        if extra:
+            LOG.warning(
+                "Iceberg table %s has column(s) this consumer never writes: %s. "
+                "They will be null in every new row.",
+                self._config.table_identifier,
+                ", ".join(extra),
+            )
 
     def _create_table(self, catalog: Any) -> Any:
         config = self._config

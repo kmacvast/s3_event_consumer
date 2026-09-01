@@ -27,11 +27,14 @@ from confluent_kafka import Producer
 
 BUCKETS = ["demo-data", "research-raw", "telemetry"]
 PREFIXES = ["ingest/", "logs/2026/08/", "images/", ""]
+# VAST prefixes eventName with "s3:" and reports eventSource as "vast:s3".
+# Matching the real payload here means anything validated against this
+# generator is validated against the shape VAST actually publishes.
 EVENT_NAMES = [
-    "ObjectCreated:Put",
-    "ObjectCreated:Post",
-    "ObjectCreated:CompleteMultipartUpload",
-    "ObjectRemoved:Delete",
+    "s3:ObjectCreated:Put",
+    "s3:ObjectCreated:Post",
+    "s3:ObjectCreated:CompleteMultipartUpload",
+    "s3:ObjectRemoved:Delete",
 ]
 
 
@@ -42,7 +45,7 @@ def well_formed_event(index: int) -> dict:
     return {
         "Records": [
             {
-                "eventVersion": "2.1",
+                "eventVersion": "2.2",
                 "eventSource": "vast:s3",
                 "awsRegion": "us-east-1",
                 "eventTime": dt.datetime.now(dt.timezone.utc)
@@ -51,7 +54,7 @@ def well_formed_event(index: int) -> dict:
                 "eventName": random.choice(EVENT_NAMES),
                 "s3": {
                     "s3SchemaVersion": "1.0",
-                    "bucket": {"name": bucket, "arn": f"arn:aws:s3:::{bucket}"},
+                    "bucket": {"name": bucket, "arn": f"arn:vast:s3:::{bucket}"},
                     "object": {
                         "key": key,
                         "size": random.randint(1, 5_000_000),
@@ -75,7 +78,7 @@ def awkward_event(index: int) -> dict:
             {
                 "Records": [
                     {
-                        "eventName": "ObjectCreated:Put",
+                        "eventName": "s3:ObjectCreated:Put",
                         "eventTime": dt.datetime.now(dt.timezone.utc).isoformat(),
                         "s3": {"bucket": {"name": bucket}, "object": {"key": key}},
                     }
@@ -85,7 +88,7 @@ def awkward_event(index: int) -> dict:
             {
                 "Records": [
                     {
-                        "eventName": "ObjectCreated:Put",
+                        "eventName": "s3:ObjectCreated:Put",
                         "eventTime": "not a timestamp",
                         "s3": {
                             "bucket": {"name": bucket},
@@ -98,14 +101,14 @@ def awkward_event(index: int) -> dict:
             {
                 "Records": [
                     {
-                        "eventName": "ObjectCreated:Put",
+                        "eventName": "s3:ObjectCreated:Put",
                         "s3": {
                             "bucket": {"name": bucket},
                             "object": {"key": f"{key}.a", "size": 11},
                         },
                     },
                     {
-                        "eventName": "ObjectRemoved:Delete",
+                        "eventName": "s3:ObjectRemoved:Delete",
                         "s3": {"bucket": {"name": bucket}, "object": {"key": f"{key}.b"}},
                     },
                 ]
@@ -114,7 +117,7 @@ def awkward_event(index: int) -> dict:
             {
                 "Records": [
                     {
-                        "eventName": "ObjectCreated:Put",
+                        "eventName": "s3:ObjectCreated:Put",
                         "s3": {
                             "bucket": {"name": bucket},
                             "object": {"key": "reports/quarterly+report%20final.pdf", "size": 9},
@@ -122,8 +125,16 @@ def awkward_event(index: int) -> dict:
                     }
                 ]
             },
-            # No S3 section at all.
-            {"Records": [{"eventName": "s3:TestEvent"}]},
+            # The connectivity test event VAST fires when a notification is
+            # saved. Deliberately not the Records envelope.
+            {
+                "Service": "Vast S3",
+                "Event": "s3:TestEvent",
+                "Time": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "Bucket": bucket,
+                "RequestId": f"{random.getrandbits(64):016X}",
+                "HostId": f"{random.getrandbits(64):016X}",
+            },
             # An explicitly empty record list.
             {"Records": []},
             # Not an S3 event notification at all.

@@ -24,7 +24,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 COMPOSE="docker compose -f docker/docker-compose.yml"
-CONFIG="s3_consumer_config.local-iceberg.json"
+CONFIG="${CONFIG:-s3_consumer_config.json}"
+NAMESPACE="${ICEBERG_NAMESPACE:-s3_events}"
+TABLE="${ICEBERG_TABLE:-object_events}"
+BROKER="${VAST_KAFKA_BROKER:-localhost:19092}"
 PYTHON="${PYTHON:-python3}"
 GROUP="outage-test-$$"
 TOPIC="outage-events-$$"
@@ -43,25 +46,35 @@ trino_query() {
 }
 
 count_rows() {
-    trino_query "SELECT count(*) FROM iceberg.s3_events.object_events" | tr -d '"' | tail -1
+    trino_query "SELECT count(*) FROM iceberg.$NAMESPACE.$TABLE" | tr -d '"' | tail -1
 }
 
 # Committed offset for our throwaway consumer group, or "-" when never committed.
 committed_offset() {
-    $COMPOSE exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh \
-        --bootstrap-server localhost:9092 --describe --group "$GROUP" 2>/dev/null \
-        | awk -v t="$TOPIC" '$2 == t {print $4}' | head -1
+    GROUP="$GROUP" TOPIC="$TOPIC" BROKER="$BROKER" $PYTHON - <<'PYEOF' 2>/dev/null
+import os
+from confluent_kafka import Consumer, TopicPartition
+c = Consumer({"bootstrap.servers": os.environ["BROKER"],
+              "group.id": os.environ["GROUP"], "enable.auto.commit": False})
+try:
+    committed = c.committed([TopicPartition(os.environ["TOPIC"], 0)], timeout=15)
+    offset = committed[0].offset if committed else -1001
+    print("" if offset is None or offset < 0 else offset)
+finally:
+    c.close()
+PYEOF
 }
 
 # A config on its own topic and consumer group, so this test cannot disturb the
 # offsets of the main demo.
 build_config() {
     $PYTHON - "$CONFIG" "$WORK/config.json" "$TOPIC" "$GROUP" "$1" <<'PYEOF'
-import json, sys
+import json, os, sys
 source, target, topic, group, batch_size = sys.argv[1:6]
 document = json.load(open(source))
 document["topic"] = topic
 document["kafka_config"]["group.id"] = group
+document["kafka_config"]["bootstrap.servers"] = os.environ["VAST_KAFKA_BROKER"]
 document["iceberg"]["batch_size"] = int(batch_size)
 document["iceberg"]["flush_interval_seconds"] = 3
 document["iceberg"]["max_flush_attempts"] = 3
@@ -120,6 +133,7 @@ step "Publishing $EVENT_COUNT events into the outage"
 # --------------------------------------------------------------------------- #
 
 $PYTHON scripts/publish_test_events.py \
+    --bootstrap-servers "$BROKER" \
     --topic "$TOPIC" --count "$EVENT_COUNT" --interval 0 --well-formed-only --seed 11 >/dev/null \
     || fail "could not publish events"
 pass "$EVENT_COUNT events published to $TOPIC"
@@ -176,7 +190,7 @@ step "Restoring the Iceberg catalog"
 
 $COMPOSE start iceberg-rest >/dev/null 2>&1
 DEADLINE=$((SECONDS + 120))
-until curl -fsS "http://localhost:8181/v1/config?warehouse=s3://warehouse/" >/dev/null 2>&1; do
+until curl -fsS "${ICEBERG_CATALOG_URI_HOST:-http://localhost:8181}/v1/config" >/dev/null 2>&1; do
     [ $SECONDS -lt $DEADLINE ] || fail "iceberg-rest did not come back"
     sleep 2
 done
@@ -240,8 +254,12 @@ pass "Kafka offsets committed only after the Iceberg commit succeeded"
 step "Cleaning up the throwaway consumer group"
 # --------------------------------------------------------------------------- #
 
-$COMPOSE exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh \
-    --bootstrap-server localhost:9092 --delete --group "$GROUP" >/dev/null 2>&1 || true
+GROUP="$GROUP" BROKER="$BROKER" $PYTHON - >/dev/null 2>&1 <<'PYEOF' || true
+import os
+from confluent_kafka.admin import AdminClient
+admin = AdminClient({"bootstrap.servers": os.environ["BROKER"]})
+admin.delete_consumer_groups([os.environ["GROUP"]], request_timeout=30)[os.environ["GROUP"]].result()
+PYEOF
 pass "consumer group removed"
 
 printf '\n\033[32mOutage test passed.\033[0m Replay after an Iceberg outage recovered every event.\n'

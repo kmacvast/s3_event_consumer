@@ -1,0 +1,29 @@
+{
+  "_comment": "VAST S3 -> Apache Iceberg customer demo configuration. Copy to s3_consumer_config.json (git-ignored) and replace the <PLACEHOLDERS>. Every credential is an 'env:NAME' reference resolved from the environment at startup, so no secret is ever written to this file. Source docker/demo.env first: set -a; . ./docker/demo.env; set +a",
+  "kafka_config": {
+    "bootstrap.servers": "env:VAST_KAFKA_BROKER",
+    "group.id": "env:VAST_KAFKA_GROUP",
+    "auto.offset.reset": "earliest"
+  },
+  "topic": "env:VAST_KAFKA_TOPIC",
+  "iceberg": {
+    "enabled": true,
+    "namespace": "env:ICEBERG_NAMESPACE",
+    "table": "env:ICEBERG_TABLE",
+    "batch_size": 25,
+    "flush_interval_seconds": 5,
+    "create_if_missing": true,
+    "max_flush_attempts": 5,
+    "retry_backoff_seconds": 5,
+    "catalog": {
+      "type": "rest",
+      "uri": "env:ICEBERG_CATALOG_URI_HOST",
+      "warehouse": "env:ICEBERG_WAREHOUSE",
+      "s3.endpoint": "env:VAST_S3_ENDPOINT",
+      "s3.access-key-id": "env:VAST_S3_ACCESS_KEY",
+      "s3.secret-access-key": "env:VAST_S3_SECRET_KEY",
+      "s3.region": "env:VAST_S3_REGION",
+      "s3.force-virtual-addressing": false
+    }
+  }
+}
