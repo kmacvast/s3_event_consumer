@@ -128,6 +128,89 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(watch.strip_ansi("\033[1m184\033[0m"), "184")
 
 
+class PyicebergSummaryTests(unittest.TestCase):
+    """Reproduce the live dashboard crash: dict(Summary) vs string-key lookup."""
+
+    class FakeSummary:
+        """Enough of PyIceberg's Summary to hit key.lower() on a tuple.
+
+        The real class is a pydantic model *and* a Mapping. Pydantic's
+        ``__iter__`` yields ``(field, value)`` pairs; Mapping.keys() walks
+        that iterator; ``dict(summary)`` then looks up those pairs.
+        """
+
+        def __init__(self, extra: dict, operation: str = "append"):
+            self.additional_properties = extra
+            self.operation = type("Op", (), {"value": operation})()
+
+        def __iter__(self):
+            yield ("operation", self.operation)
+            yield from self.additional_properties.items()
+
+        def keys(self):
+            return list(self)
+
+        def __getitem__(self, key):
+            if key.lower() == "operation":
+                return self.operation
+            return self.additional_properties.get(key)
+
+        def get(self, key, default=None):
+            try:
+                value = self[key]
+            except AttributeError:
+                return default
+            return default if value is None else value
+
+    def test_dict_on_summary_is_the_live_crash(self):
+        summary = self.FakeSummary({"total-records": "40", "added-records": "25"})
+        with self.assertRaises(AttributeError) as caught:
+            dict(summary)
+        self.assertIn("lower", str(caught.exception))
+
+    def test_snapshot_summary_map_reads_counts_without_dict(self):
+        summary = self.FakeSummary(
+            {"total-records": "40", "total-data-files": "2", "added-records": "25"},
+            operation="append",
+        )
+        mapped = watch.snapshot_summary_map(summary)
+        self.assertEqual(mapped["total-records"], "40")
+        self.assertEqual(mapped["added-records"], "25")
+        self.assertEqual(mapped["operation"], "append")
+
+    def test_plain_dict_summary_still_works(self):
+        mapped = watch.snapshot_summary_map({"total-records": 12, "added-records": 12})
+        self.assertEqual(mapped["total-records"], 12)
+
+    def test_iceberg_metrics_from_table_does_not_call_dict_on_summary(self):
+        summary = self.FakeSummary(
+            {"total-records": "40", "total-data-files": "2", "added-records": "15"}
+        )
+
+        class Snap:
+            def __init__(self, payload):
+                self.timestamp_ms = 1_725_000_000_000
+                self.summary = payload
+
+        class Table:
+            def location(self):
+                return "s3://kmacs-iceberg-bucket/s3_events/object_events"
+
+            def snapshots(self):
+                return [Snap(summary)]
+
+            def current_snapshot(self):
+                return Snap(summary)
+
+        metrics = watch.iceberg_metrics_from_table(Table(), now=1_725_000_000_010)
+        self.assertEqual(metrics["rows"], 40)
+        self.assertEqual(metrics["data_files"], 2)
+        self.assertEqual(metrics["last_added"], 15)
+        self.assertEqual(metrics["snapshots"], 1)
+        self.assertEqual(metrics["recent"][0][1], "append")
+        self.assertEqual(metrics["recent"][0][2], 15)
+
+
 class SimulatorTests(unittest.TestCase):
     def test_cascade_objects_lead_parquet_trails(self):
         sim = watch.IngestSimulator(batch_size=25, flush_interval=5.0, seed=1)

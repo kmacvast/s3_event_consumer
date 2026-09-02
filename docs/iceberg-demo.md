@@ -843,7 +843,7 @@ Using `docker/docker-compose.yml` as shipped, with the VAST endpoints and
 credentials supplied through the same environment variables a real cluster would
 populate:
 
-- 248 unit tests pass
+- 252 unit tests pass
 - `ruff` clean
 - `shellcheck` clean on every script
 - full smoke test: 40 events published, 40 rows written, 2 snapshots created,

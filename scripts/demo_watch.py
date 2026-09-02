@@ -868,41 +868,12 @@ class LiveCluster:
                 self._table = self._catalog.load_table(self._iceberg_ident)
             else:
                 try:
-                    self._table.refresh()
+                    self._table = self._table.refresh() or self._table
                 except Exception:  # noqa: BLE001 - reload if refresh is unavailable
                     self._table = self._catalog.load_table(self._iceberg_ident)
         except (NoSuchTableError, NoSuchNamespaceError):
             return {"error": f"table {self._iceberg_ident} does not exist yet"}
-        table = self._table
-        location = None
-        try:
-            location = table.location()
-        except Exception:  # noqa: BLE001
-            location = None
-        snaps = list(table.snapshots())
-        current = table.current_snapshot()
-        summary = dict(current.summary or {}) if current is not None else {}
-        rows = _intish(summary.get("total-records"))
-        data_files = _intish(summary.get("total-data-files"))
-        last_added = _intish(summary.get("added-records"))
-        last_age = None
-        if current is not None and getattr(current, "timestamp_ms", None):
-            last_age = max(0.0, time.time() - (current.timestamp_ms / 1000.0))
-        recent = []
-        for snap in snaps[-LATEST_SNAPS:]:
-            ts = dt.datetime.fromtimestamp(snap.timestamp_ms / 1000.0, tz=dt.timezone.utc)
-            info = dict(snap.summary or {})
-            op = info.get("operation") or getattr(snap, "operation", None) or "append"
-            recent.append((ts, str(op), _intish(info.get("added-records"))))
-        return {
-            "rows": rows,
-            "data_files": data_files,
-            "snapshots": len(snaps),
-            "last_added": last_added,
-            "last_commit_age_s": last_age,
-            "recent": recent,
-            "location": location,
-        }
+        return iceberg_metrics_from_table(self._table)
 
     def _collect_warehouse(self) -> dict[str, Any]:
         warehouse = self._warehouse
@@ -936,6 +907,110 @@ def _intish(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _call_or_attr(obj: Any, name: str) -> Any:
+    """Return ``obj.name()`` when it is a method, otherwise ``obj.name``.
+
+    PyIceberg has used both spellings for ``location``, ``snapshots`` and
+    ``current_snapshot``.
+    """
+    attr = getattr(obj, name, None)
+    if callable(attr):
+        try:
+            return attr()
+        except TypeError:
+            return attr
+    return attr
+
+
+def snapshot_summary_map(summary: Any) -> dict[str, Any]:
+    """Key/value view of a PyIceberg Snapshot.summary.
+
+    Do not call ``dict(summary)``. PyIceberg's Summary is a pydantic model
+    that also implements Mapping. Pydantic's ``__iter__`` yields
+    ``(field, value)`` tuples, so ``dict(summary)`` looks those tuples up as
+    keys, and Summary.__getitem__ then calls ``key.lower()`` on a tuple:
+
+        AttributeError: 'tuple' object has no attribute 'lower'
+    """
+    if summary is None:
+        return {}
+    if isinstance(summary, dict):
+        return dict(summary)
+
+    mapped: dict[str, Any] = {}
+    extra = getattr(summary, "additional_properties", None)
+    if isinstance(extra, dict):
+        mapped.update(extra)
+
+    op = getattr(summary, "operation", None)
+    if op is not None:
+        mapped["operation"] = getattr(op, "value", op)
+
+    if mapped:
+        return mapped
+
+    getter = getattr(summary, "get", None)
+    if not callable(getter):
+        return {}
+    for key in (
+        "operation",
+        "total-records",
+        "total-data-files",
+        "added-records",
+        "added-data-files",
+    ):
+        try:
+            value = getter(key)
+        except (AttributeError, TypeError):
+            continue
+        if value is not None:
+            mapped[key] = getattr(value, "value", value)
+    return mapped
+
+
+def _operation_label(value: Any) -> str:
+    if value is None:
+        return "append"
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
+def iceberg_metrics_from_table(table: Any, now: float | None = None) -> dict[str, Any]:
+    """Pull the dashboard fields out of a loaded Iceberg table object."""
+    wall_now = time.time() if now is None else now
+    location = _call_or_attr(table, "location")
+    snaps = list(_call_or_attr(table, "snapshots") or [])
+    current = _call_or_attr(table, "current_snapshot")
+    summary = snapshot_summary_map(getattr(current, "summary", None) if current is not None else None)
+    last_age = None
+    ts_ms = getattr(current, "timestamp_ms", None) if current is not None else None
+    if ts_ms is not None:
+        last_age = max(0.0, wall_now - (int(ts_ms) / 1000.0))
+    recent = []
+    for snap in snaps[-LATEST_SNAPS:]:
+        ts_ms = getattr(snap, "timestamp_ms", None)
+        if ts_ms is None:
+            continue
+        ts = dt.datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=dt.timezone.utc)
+        info = snapshot_summary_map(getattr(snap, "summary", None))
+        recent.append(
+            (
+                ts,
+                _operation_label(info.get("operation")),
+                _intish(info.get("added-records")),
+            )
+        )
+    return {
+        "rows": _intish(summary.get("total-records")),
+        "data_files": _intish(summary.get("total-data-files")),
+        "snapshots": len(snaps),
+        "last_added": _intish(summary.get("added-records")),
+        "last_commit_age_s": last_age,
+        "recent": recent,
+        "location": location if isinstance(location, str) else None,
+    }
 
 
 def _s3_settings(config: Any) -> dict[str, str]:
