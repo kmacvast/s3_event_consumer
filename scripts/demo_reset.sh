@@ -3,18 +3,24 @@
 # Return the demo to a known starting condition.
 #
 #     set -a; . ./docker/demo.env; set +a
-#     ./scripts/demo_reset.sh              # show what would happen, change nothing
-#     ./scripts/demo_reset.sh --confirm    # actually do it
+#     ./scripts/demo_reset.sh                    # show what would happen, change nothing
+#     ./scripts/demo_reset.sh --confirm          # Iceberg table + consumer group
+#     ./scripts/demo_reset.sh --confirm --all    # also empty the source bucket and Kafka log
 #
 # WHAT IT RESETS
 #   1. The Iceberg demo table: dropped and recreated empty.
-#   2. The demo's Kafka consumer group offsets: deleted, so the topic replays.
-#   3. Optionally (--purge-source) the demo objects previously written into the
-#      watched bucket under the demo prefix.
+#   2. The demo's Kafka consumer group offsets: deleted, so the topic replays
+#      (skipped when --recreate-topic / --all, because that step deletes the
+#      group after replacing the topic).
+#   3. Optionally (--purge-source) objects under the demo/ prefix.
+#   4. Optionally (--purge-source-all) every object in VAST_SOURCE_BUCKET.
+#      The bucket itself is never deleted.
+#   5. Optionally (--recreate-topic) delete and recreate VAST_KAFKA_TOPIC via
+#      Kafka Admin delete_topics plus VMS (vastpy). This is what zeros the
+#      dashboard's KAFKA EVENTS meter.
 #
-# It does not empty the Kafka log. VAST retention keeps prior events until
-# they expire (7 days by default). To delete and recreate the topic itself,
-# use scripts/demo_recreate_topic.py.
+# --all is --purge-source-all plus --recreate-topic. Purge runs before the
+# topic is recreated so ObjectRemoved events do not refill the new log.
 #
 # SAFETY
 # This script is deliberately hard to misuse:
@@ -22,13 +28,11 @@
 #   - It only ever touches the ONE namespace.table named by ICEBERG_NAMESPACE
 #     and ICEBERG_TABLE, and refuses obviously dangerous values.
 #   - It refuses to run if the table is not in the demo namespace.
-#   - It never deletes a bucket, and never deletes anything outside the demo
-#     key prefix in the watched bucket.
-#   - --purge-source is opt-in on top of --confirm and lists every key first.
-#
-# It cannot delete arbitrary VAST data: there is no code path here that removes
-# a bucket, and object deletion is restricted to DEMO_PREFIX inside
-# VAST_SOURCE_BUCKET.
+#   - It never deletes a bucket.
+#   - --purge-source stays inside DEMO_PREFIX; --purge-source-all is opt-in
+#     and still only objects inside VAST_SOURCE_BUCKET, never the warehouse.
+#   - --purge-source, --purge-source-all and --recreate-topic are opt-in on
+#     top of --confirm.
 
 set -uo pipefail
 
@@ -42,11 +46,16 @@ DEMO_PREFIX="${DEMO_PREFIX:-demo/}"
 
 CONFIRM=0
 PURGE_SOURCE=0
+PURGE_ALL=0
+RECREATE_TOPIC=0
 for arg in "$@"; do
     case "$arg" in
-        --confirm)       CONFIRM=1 ;;
-        --purge-source)  PURGE_SOURCE=1 ;;
-        -h|--help)       sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --confirm)          CONFIRM=1 ;;
+        --purge-source)     PURGE_SOURCE=1 ;;
+        --purge-source-all) PURGE_ALL=1; PURGE_SOURCE=1 ;;
+        --recreate-topic)   RECREATE_TOPIC=1 ;;
+        --all)              PURGE_ALL=1; PURGE_SOURCE=1; RECREATE_TOPIC=1 ;;
+        -h|--help)          sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'unknown option: %s\n' "$arg" >&2; exit 2 ;;
     esac
 done
@@ -87,6 +96,14 @@ fi
 ok "target is iceberg.$NAMESPACE.$TABLE"
 note "consumer group : $VAST_KAFKA_GROUP"
 note "topic          : $VAST_KAFKA_TOPIC"
+if [ "$PURGE_ALL" -eq 1 ]; then
+    note "source purge   : ALL objects in s3://${VAST_SOURCE_BUCKET:-<VAST_SOURCE_BUCKET>}"
+elif [ "$PURGE_SOURCE" -eq 1 ]; then
+    note "source purge   : s3://${VAST_SOURCE_BUCKET:-<bucket>}/$DEMO_PREFIX*"
+fi
+if [ "$RECREATE_TOPIC" -eq 1 ]; then
+    note "kafka log      : delete and recreate $VAST_KAFKA_TOPIC"
+fi
 
 if [ "$CONFIRM" -eq 0 ]; then
     printf '\n\033[33mDRY RUN.\033[0m Nothing will be changed. Re-run with --confirm to apply.\n'
@@ -126,13 +143,109 @@ else
 fi
 
 # --------------------------------------------------------------------------- #
-step "2. Kafka consumer group offsets"
+step "2. Demo objects in the watched bucket"
 # --------------------------------------------------------------------------- #
 
-# Deleting the group makes the next run replay the topic from the beginning
-# (auto.offset.reset: earliest), which is what gives a repeatable demo without
-# deleting a single event from VAST.
-if [ "$CONFIRM" -eq 1 ]; then
+if [ "$PURGE_SOURCE" -eq 0 ]; then
+    note "skipped - pass --purge-source, --purge-source-all, or --all"
+    note "the dashboard SOURCE OBJECTS meter counts the whole bucket unless you pass --prefix"
+else
+    [ -n "${VAST_SOURCE_BUCKET:-}" ] || bad "VAST_SOURCE_BUCKET is not set"
+    if [ "$PURGE_ALL" -eq 0 ]; then
+        case "$DEMO_PREFIX" in
+            ""|"/"|"*") bad "refusing to purge with prefix '$DEMO_PREFIX' - it must be a real prefix" ;;
+        esac
+    fi
+
+    export DEMO_PREFIX
+    export DEMO_PURGE_ALL="$PURGE_ALL"
+    export DEMO_CONFIRM="$CONFIRM"
+    if $PYTHON - <<'PYEOF'
+import os
+import sys
+import boto3
+from botocore.config import Config
+
+bucket = os.environ["VAST_SOURCE_BUCKET"]
+warehouse = os.environ.get("ICEBERG_WAREHOUSE", "")
+if warehouse.startswith("s3://") or warehouse.startswith("s3a://"):
+    rest = warehouse.split("://", 1)[1]
+    warehouse_bucket = rest.split("/", 1)[0]
+    if warehouse_bucket and warehouse_bucket == bucket:
+        sys.exit("refusing to purge VAST_SOURCE_BUCKET; it is the Iceberg warehouse")
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=os.environ["VAST_S3_ENDPOINT"],
+    aws_access_key_id=os.environ["VAST_S3_ACCESS_KEY"],
+    aws_secret_access_key=os.environ["VAST_S3_SECRET_KEY"],
+    region_name=os.environ.get("VAST_S3_REGION", "us-east-1"),
+    config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+)
+purge_all = os.environ.get("DEMO_PURGE_ALL") == "1"
+prefix = "" if purge_all else os.environ["DEMO_PREFIX"]
+paginator = s3.get_paginator("list_objects_v2")
+kwargs = {"Bucket": bucket}
+if prefix:
+    kwargs["Prefix"] = prefix
+keys = []
+for page in paginator.paginate(**kwargs):
+    for item in page.get("Contents", []):
+        key = item["Key"]
+        if prefix and not key.startswith(prefix):
+            continue
+        keys.append(key)
+
+target = "s3://%s/%s*" % (bucket, prefix) if prefix else "s3://%s (entire bucket, objects only)" % bucket
+if not keys:
+    print("nothing to purge under %s" % target)
+    sys.exit(0)
+
+print("%d object(s) under %s" % (len(keys), target))
+for key in keys[:20]:
+    print("  - %s" % key)
+if len(keys) > 20:
+    print("  ... and %d more" % (len(keys) - 20))
+
+if os.environ.get("DEMO_CONFIRM") != "1":
+    print("dry-run: not deleting")
+    sys.exit(0)
+
+for i in range(0, len(keys), 1000):
+    s3.delete_objects(
+        Bucket=bucket,
+        Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]], "Quiet": True},
+    )
+print("deleted %d object(s)" % len(keys))
+PYEOF
+    then
+        if [ "$CONFIRM" -eq 1 ]; then
+            ok "purged source objects"
+            note "deletes may publish ObjectRemoved events; the topic recreate step wipes those"
+        else
+            plan "delete the listed source objects"
+        fi
+    else
+        bad "source purge failed"
+    fi
+fi
+
+# --------------------------------------------------------------------------- #
+step "3. Kafka"
+# --------------------------------------------------------------------------- #
+
+if [ "$RECREATE_TOPIC" -eq 1 ]; then
+    note "stop the demo consumer first"
+    RECREATE_ARGS=()
+    if [ "$CONFIRM" -eq 1 ]; then
+        RECREATE_ARGS+=(--confirm)
+    fi
+    if $PYTHON scripts/demo_recreate_topic.py "${RECREATE_ARGS[@]+"${RECREATE_ARGS[@]}"}"; then
+        ok "topic recreate finished"
+    else
+        bad "topic recreate failed"
+    fi
+elif [ "$CONFIRM" -eq 1 ]; then
     if $PYTHON - <<'PYEOF'
 import os, sys
 from confluent_kafka.admin import AdminClient
@@ -157,103 +270,17 @@ PYEOF
     fi
 else
     plan "delete Kafka consumer group '$VAST_KAFKA_GROUP' so the topic replays"
-fi
-
-# --------------------------------------------------------------------------- #
-step "3. Demo objects in the watched bucket"
-# --------------------------------------------------------------------------- #
-
-if [ "$PURGE_SOURCE" -eq 0 ]; then
-    note "skipped - pass --purge-source to also remove s3://$VAST_SOURCE_BUCKET/$DEMO_PREFIX*"
-    note "leaving them is usually fine: the demo writes new keys each run"
-else
-    [ -n "${VAST_SOURCE_BUCKET:-}" ] || bad "VAST_SOURCE_BUCKET is not set"
-    case "$DEMO_PREFIX" in
-        ""|"/"|"*") bad "refusing to purge with prefix '$DEMO_PREFIX' - it must be a real prefix" ;;
-    esac
-
-    export DEMO_PREFIX
-    KEYS=$($PYTHON - <<'PYEOF'
-import os
-import boto3
-from botocore.config import Config
-s3 = boto3.client(
-    "s3",
-    endpoint_url=os.environ["VAST_S3_ENDPOINT"],
-    aws_access_key_id=os.environ["VAST_S3_ACCESS_KEY"],
-    aws_secret_access_key=os.environ["VAST_S3_SECRET_KEY"],
-    region_name=os.environ.get("VAST_S3_REGION", "us-east-1"),
-    config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-)
-prefix = os.environ["DEMO_PREFIX"]
-paginator = s3.get_paginator("list_objects_v2")
-for page in paginator.paginate(Bucket=os.environ["VAST_SOURCE_BUCKET"], Prefix=prefix):
-    for item in page.get("Contents", []):
-        # Belt and braces: never emit a key that escaped the prefix.
-        if item["Key"].startswith(prefix):
-            print(item["Key"])
-PYEOF
-    )
-    COUNT=$(printf '%s' "$KEYS" | grep -c . || true)
-
-    if [ "$COUNT" -eq 0 ]; then
-        ok "nothing to purge under s3://$VAST_SOURCE_BUCKET/$DEMO_PREFIX"
-    else
-        note "$COUNT object(s) under s3://$VAST_SOURCE_BUCKET/$DEMO_PREFIX:"
-        printf '%s\n' "$KEYS" | head -20 | sed 's/^/         - /'
-        [ "$COUNT" -gt 20 ] && note "... and $((COUNT - 20)) more"
-
-        if [ "$CONFIRM" -eq 1 ]; then
-            KEYFILE=$(mktemp -t demo_reset_keys.XXXXXX)
-            printf '%s\n' "$KEYS" > "$KEYFILE"
-            if $PYTHON - "$KEYFILE" <<'PYEOF'
-import os, sys
-import boto3
-from botocore.config import Config
-s3 = boto3.client(
-    "s3",
-    endpoint_url=os.environ["VAST_S3_ENDPOINT"],
-    aws_access_key_id=os.environ["VAST_S3_ACCESS_KEY"],
-    aws_secret_access_key=os.environ["VAST_S3_SECRET_KEY"],
-    region_name=os.environ.get("VAST_S3_REGION", "us-east-1"),
-    config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-)
-prefix = os.environ["DEMO_PREFIX"]
-bucket = os.environ["VAST_SOURCE_BUCKET"]
-with open(sys.argv[1], encoding="utf-8") as handle:
-    keys = [line.strip() for line in handle if line.strip()]
-# Re-check the prefix here too. Deleting is the one irreversible thing this
-# script does, so the guard is repeated rather than trusted from upstream.
-unsafe = [k for k in keys if not k.startswith(prefix)]
-if unsafe:
-    sys.exit("refusing to delete keys outside %r: %s" % (prefix, unsafe[:3]))
-for i in range(0, len(keys), 1000):
-    s3.delete_objects(
-        Bucket=bucket,
-        Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]], "Quiet": True},
-    )
-print("deleted %d object(s)" % len(keys))
-PYEOF
-            then
-                rm -f "$KEYFILE"
-                ok "purged $COUNT demo object(s)"
-                note "note: these deletions may themselves raise ObjectRemoved events"
-            else
-                rm -f "$KEYFILE"
-                bad "purge failed"
-            fi
-        else
-            plan "delete those $COUNT object(s)"
-        fi
-    fi
+    note "this does not empty the Kafka log; pass --recreate-topic or --all for that"
 fi
 
 # --------------------------------------------------------------------------- #
 if [ "$CONFIRM" -eq 1 ]; then
-    printf '\n\033[32mReset complete.\033[0m Baseline row count should now be 0.\n'
-    printf 'Verify with:\n'
-    printf '  %s exec -T trino trino --execute "SELECT count(*) FROM iceberg.%s.%s"\n' \
-        "$COMPOSE" "$NAMESPACE" "$TABLE"
+    printf '\n\033[32mReset complete.\033[0m\n'
+    if [ "$RECREATE_TOPIC" -eq 1 ]; then
+        printf 'Dashboard meters should now be 0 after you re-save the bucket notification.\n'
+    else
+        printf 'Baseline Iceberg row count should now be 0. Kafka log is unchanged unless you passed --all.\n'
+    fi
 else
     printf '\n\033[33mDry run finished.\033[0m Re-run with --confirm to apply.\n'
 fi

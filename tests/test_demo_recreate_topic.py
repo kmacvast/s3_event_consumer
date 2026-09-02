@@ -245,6 +245,84 @@ class RecreateFlowTests(unittest.TestCase):
         self.assertEqual(client.created[0]["name"], "kmacs-topic-02")
         self.assertIn("kmacs-topic-02", client.store)
 
+    def test_dry_run_plans_kafka_admin_delete(self):
+        client = FakeVms(
+            [{"database_name": "kafkatopics", "name": "kmacs-topic-02", "topic_partitions": 1}]
+        )
+        spec = mod.spec_from_record(
+            client.store["kmacs-topic-02"],
+            database_name="kafkatopics",
+            name="kmacs-topic-02",
+            schema_name=None,
+            partitions=None,
+            retention_ms=None,
+        )
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            with mock.patch.object(mod, "delete_kafka_topic") as kafka_del:
+                mod.recreate_topic(
+                    client,
+                    client.store["kmacs-topic-02"],
+                    spec,
+                    confirm=False,
+                    timeout=0,
+                    kafka_broker="broker:9092",
+                )
+        kafka_del.assert_not_called()
+        self.assertIn("delete_topics", buf.getvalue())
+
+    def test_confirm_calls_kafka_admin_delete(self):
+        client = FakeVms(
+            [{"database_name": "kafkatopics", "name": "kmacs-topic-02", "topic_partitions": 1}]
+        )
+        spec = mod.spec_from_record(
+            client.store["kmacs-topic-02"],
+            database_name="kafkatopics",
+            name="kmacs-topic-02",
+            schema_name=None,
+            partitions=None,
+            retention_ms=None,
+        )
+        with mock.patch("sys.stdout", io.StringIO()):
+            with mock.patch.object(mod, "delete_kafka_topic", return_value="deleted") as kafka_del:
+                mod.recreate_topic(
+                    client,
+                    client.store["kmacs-topic-02"],
+                    spec,
+                    confirm=True,
+                    timeout=0,
+                    kafka_broker="broker:9092",
+                )
+        kafka_del.assert_called_once_with("broker:9092", "kmacs-topic-02")
+
+    def test_leftover_watermarks_fail(self):
+        client = FakeVms(
+            [{"database_name": "kafkatopics", "name": "kmacs-topic-02", "topic_partitions": 1}]
+        )
+        spec = mod.spec_from_record(
+            client.store["kmacs-topic-02"],
+            database_name="kafkatopics",
+            name="kmacs-topic-02",
+            schema_name=None,
+            partitions=None,
+            retention_ms=None,
+        )
+        with mock.patch("sys.stdout", io.StringIO()):
+            with mock.patch.object(mod, "delete_kafka_topic", return_value="absent"):
+                with mock.patch.object(mod, "kafka_topic_in_metadata", return_value=True):
+                    with mock.patch.object(mod, "kafka_retained_messages", return_value=527397):
+                        with self.assertRaises(mod.ScriptError) as raised:
+                            mod.recreate_topic(
+                                client,
+                                client.store["kmacs-topic-02"],
+                                spec,
+                                confirm=True,
+                                timeout=0.01,
+                                kafka_broker="broker:9092",
+                                sleeper=lambda _: None,
+                            )
+        self.assertIn("527397", str(raised.exception))
+
     def test_missing_topic_creates_only(self):
         client = FakeVms()
         spec = mod.default_spec(
@@ -382,9 +460,10 @@ class MainTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, env, clear=True):
             with mock.patch.object(mod, "open_vms_client", return_value=client):
-                with mock.patch.object(mod, "delete_consumer_group", return_value="deleted") as group:
-                    with mock.patch("sys.stdout", io.StringIO()):
-                        rc = mod.main(["--confirm"])
+                with mock.patch.object(mod, "delete_kafka_topic", return_value="deleted"):
+                    with mock.patch.object(mod, "delete_consumer_group", return_value="deleted") as group:
+                        with mock.patch("sys.stdout", io.StringIO()):
+                            rc = mod.main(["--confirm", "--timeout", "0"])
         self.assertEqual(rc, 0)
         self.assertEqual(len(client.deleted), 1)
         self.assertEqual(len(client.created), 1)
@@ -404,9 +483,10 @@ class MainTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, env, clear=True):
             with mock.patch.object(mod, "open_vms_client", return_value=client):
-                with mock.patch.object(mod, "delete_consumer_group") as group:
-                    with mock.patch("sys.stdout", io.StringIO()):
-                        rc = mod.main(["--confirm", "--keep-group"])
+                with mock.patch.object(mod, "delete_kafka_topic", return_value="deleted"):
+                    with mock.patch.object(mod, "delete_consumer_group") as group:
+                        with mock.patch("sys.stdout", io.StringIO()):
+                            rc = mod.main(["--confirm", "--keep-group", "--timeout", "0"])
         self.assertEqual(rc, 0)
         group.assert_not_called()
 

@@ -2,10 +2,10 @@
 """Delete and recreate one VAST Event Broker topic via the VMS Python SDK.
 
 The Kafka log is what ``scripts/demo_watch.py`` reports as KAFKA EVENTS:
-retained messages, not the current object count. ``scripts/demo_reset.sh``
-drops the Iceberg table and the consumer group. It does not truncate that
-log. VAST has no auto topic create, so the only way to empty it is to delete
-the topic and create it again with the same name.
+retained messages, not the current object count. A VMS topic delete can
+leave that log in place, which is why this script also calls the Kafka
+Admin ``delete_topics`` API that VAST documents for the Event Broker, then
+creates the topic again through VMS (VAST has no auto topic create).
 
     python3 -m pip install vastpy
     set -a; . ./docker/demo.env; set +a
@@ -19,7 +19,10 @@ After recreate, re-save the source bucket notification in VMS. The topic
 name is the same, but a freshly created topic has an empty log, and saving
 the notification publishes VAST's connectivity test event onto it.
 
-This does not drop Iceberg, and it does not delete S3 objects.
+This does not drop Iceberg, and it does not delete S3 objects. To zero
+the dashboard (source objects, Kafka, Iceberg, Parquet) in one shot:
+
+    ./scripts/demo_reset.sh --confirm --all
 """
 
 from __future__ import annotations
@@ -316,11 +319,72 @@ def create_topic(client: Any, spec: TopicSpec) -> None:
     client.topics.post(**body)
 
 
-def delete_consumer_group(broker: str, group: str) -> str:
-    """Delete a Kafka consumer group. Returns 'deleted', 'absent', or raises."""
+def _kafka_admin(broker: str):
     from confluent_kafka.admin import AdminClient
 
-    admin = AdminClient({"bootstrap.servers": broker})
+    return AdminClient({"bootstrap.servers": broker})
+
+
+def is_unknown_topic(exc: BaseException) -> bool:
+    text = str(exc).upper()
+    return "UNKNOWN_TOPIC" in text or "UNKNOWN_TOPIC_OR_PARTITION" in text
+
+
+def delete_kafka_topic(broker: str, topic: str, timeout: float = 30.0) -> str:
+    """Delete a topic via the Kafka Admin API. Returns 'deleted' or 'absent'."""
+    admin = _kafka_admin(broker)
+    futures = admin.delete_topics([topic], operation_timeout=timeout)
+    try:
+        futures[topic].result(timeout=timeout)
+    except Exception as exc:  # noqa: BLE001
+        if is_unknown_topic(exc):
+            return "absent"
+        raise
+    return "deleted"
+
+
+def kafka_topic_in_metadata(broker: str, topic: str, timeout: float = 15.0) -> bool:
+    admin = _kafka_admin(broker)
+    md = admin.list_topics(topic, timeout=timeout)
+    topic_md = md.topics.get(topic)
+    if topic_md is None:
+        return False
+    return topic_md.error is None
+
+
+def kafka_retained_messages(broker: str, topic: str, timeout: float = 15.0) -> int | None:
+    """High-minus-low watermarks, the same number the dashboard shows."""
+    from confluent_kafka import Consumer, TopicPartition
+
+    consumer = Consumer(
+        {
+            "bootstrap.servers": broker,
+            "group.id": "vast-iceberg-demo-wipe-check",
+            "enable.auto.commit": False,
+            "auto.offset.reset": "earliest",
+        }
+    )
+    try:
+        md = consumer.list_topics(topic, timeout=timeout)
+        topic_md = md.topics.get(topic)
+        if topic_md is None or topic_md.error is not None:
+            return None
+        retained = 0
+        for pid in topic_md.partitions:
+            low, high = consumer.get_watermark_offsets(
+                TopicPartition(topic, pid),
+                timeout=timeout,
+                cached=False,
+            )
+            retained += int(high) - int(low)
+        return retained
+    finally:
+        consumer.close()
+
+
+def delete_consumer_group(broker: str, group: str) -> str:
+    """Delete a Kafka consumer group. Returns 'deleted', 'absent', or raises."""
+    admin = _kafka_admin(broker)
     futures = admin.delete_consumer_groups([group], request_timeout=30)
     try:
         futures[group].result()
@@ -513,67 +577,102 @@ def recreate_topic(
     *,
     confirm: bool,
     timeout: float,
+    kafka_broker: str = "",
     sleeper: Callable[[float], None] = time.sleep,
 ) -> None:
+    label = f"{spec.database_name}/{spec.name}"
     if existing is None:
-        note(f"topic {spec.database_name}/{spec.name} is not present")
-        if not confirm:
-            plan(
-                f"create {spec.database_name}/{spec.name} "
-                f"partitions={spec.topic_partitions} retention_ms={spec.retention_ms}"
-            )
-            return
-        create_topic(client, spec)
-        if timeout > 0 and not wait_until(
-            lambda: load_existing_topic(client, spec.database_name, spec.name) is not None,
-            timeout,
-            sleeper=sleeper,
-        ):
-            raise ScriptError(
-                f"created {spec.database_name}/{spec.name}, but it was not visible "
-                f"after {timeout:g}s"
-            )
-        ok(f"created {spec.database_name}/{spec.name}")
-        return
+        note(f"VMS topic {label} is not present")
+    else:
+        note(
+            f"VMS current: partitions={spec.topic_partitions} "
+            f"retention_ms={spec.retention_ms}"
+            + (f" schema={spec.schema_name}" if spec.schema_name else "")
+        )
 
-    note(
-        f"current: partitions={spec.topic_partitions} "
-        f"retention_ms={spec.retention_ms}"
-        + (f" schema={spec.schema_name}" if spec.schema_name else "")
-    )
     if not confirm:
-        plan(f"DELETE {spec.database_name}/{spec.name}")
+        if kafka_broker:
+            plan(f"Kafka Admin delete_topics({spec.name!r})")
+        if existing is not None:
+            plan(f"DELETE VMS {label}")
         plan(
-            f"create {spec.database_name}/{spec.name} "
+            f"create VMS {label} "
             f"partitions={spec.topic_partitions} retention_ms={spec.retention_ms}"
         )
         return
 
-    delete_topic(client, spec)
-    if timeout > 0 and not wait_until(
-        lambda: load_existing_topic(client, spec.database_name, spec.name) is None,
-        timeout,
-        sleeper=sleeper,
-    ):
-        raise ScriptError(
-            f"deleted {spec.database_name}/{spec.name}, but it was still visible "
-            f"after {timeout:g}s"
-        )
-    ok(f"deleted {spec.database_name}/{spec.name}")
+    kafka_deleted = None
+    if kafka_broker:
+        try:
+            kafka_deleted = delete_kafka_topic(kafka_broker, spec.name)
+            ok(f"Kafka Admin delete_topics {spec.name!r}: {kafka_deleted}")
+        except Exception as exc:  # noqa: BLE001
+            note(f"Kafka Admin delete_topics failed: {exc}")
+            note("continuing with VMS delete+create; watermarks will be checked afterwards")
+        if kafka_deleted == "deleted" and timeout > 0:
+            if not wait_until(
+                lambda: not kafka_topic_in_metadata(kafka_broker, spec.name),
+                timeout,
+                sleeper=sleeper,
+            ):
+                raise ScriptError(
+                    f"Kafka topic {spec.name!r} was deleted but is still in broker metadata "
+                    f"after {timeout:g}s"
+                )
+
+    if existing is not None:
+        delete_topic(client, spec)
+        if timeout > 0 and not wait_until(
+            lambda: load_existing_topic(client, spec.database_name, spec.name) is None,
+            timeout,
+            sleeper=sleeper,
+        ):
+            raise ScriptError(f"deleted VMS {label}, but it was still visible after {timeout:g}s")
+        ok(f"VMS topic {label} is absent")
+
     create_topic(client, spec)
     if timeout > 0 and not wait_until(
         lambda: load_existing_topic(client, spec.database_name, spec.name) is not None,
         timeout,
         sleeper=sleeper,
     ):
-        raise ScriptError(
-            f"created {spec.database_name}/{spec.name}, but it was not visible "
-            f"after {timeout:g}s"
-        )
+        raise ScriptError(f"created VMS {label}, but it was not visible after {timeout:g}s")
     ok(
-        f"created {spec.database_name}/{spec.name} "
+        f"created VMS {label} "
         f"partitions={spec.topic_partitions} retention_ms={spec.retention_ms}"
     )
+
+    if kafka_broker and timeout > 0:
+        if not wait_until(
+            lambda: kafka_topic_in_metadata(kafka_broker, spec.name),
+            timeout,
+            sleeper=sleeper,
+        ):
+            raise ScriptError(
+                f"created {spec.name!r}, but the Event Broker still does not list it "
+                f"after {timeout:g}s"
+            )
+        retained = kafka_retained_messages(kafka_broker, spec.name)
+        if retained not in (0, None) and not wait_until(
+            lambda: kafka_retained_messages(kafka_broker, spec.name) == 0,
+            timeout,
+            sleeper=sleeper,
+        ):
+            leftover = kafka_retained_messages(kafka_broker, spec.name)
+            raise ScriptError(
+                f"after recreate, {spec.name!r} still has {leftover} retained messages; "
+                "the Event Broker Kafka log was not emptied"
+            )
+        retained = kafka_retained_messages(kafka_broker, spec.name)
+        if retained == 0:
+            ok("Kafka retained message count is 0")
+        elif retained is None:
+            note("could not read watermarks yet; check scripts/demo_watch.py")
+        else:
+            raise ScriptError(
+                f"after recreate, {spec.name!r} still has {retained} retained messages; "
+                "the Event Broker Kafka log was not emptied"
+            )
 
 
 def maybe_delete_group(settings: Settings) -> None:
@@ -646,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
             spec,
             confirm=settings.confirm,
             timeout=settings.timeout,
+            kafka_broker=settings.broker,
         )
         step("2. Kafka consumer group offsets")
         maybe_delete_group(settings)
@@ -657,9 +757,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if settings.confirm:
-        print(f"\n{GREEN}Topic recreated.{RESET} The Kafka log for this topic is empty.")
+        print(f"\n{GREEN}Topic recreated.{RESET} Kafka watermarks for this topic should be 0.")
         note("re-save the source bucket notification in VMS so events keep landing here")
-        note("Iceberg and S3 were not touched; use scripts/demo_reset.sh for those")
+        note("to also empty the source bucket and Iceberg table: ./scripts/demo_reset.sh --confirm --all")
     else:
         print(f"\n{YELLOW}Dry run finished.{RESET} Re-run with --confirm to apply.")
     return 0

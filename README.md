@@ -589,7 +589,7 @@ entirely by the same environment variables a real cluster would populate. **None
 of it has been run against a real VAST cluster yet.** Read any claim about
 behaviour with that distinction in mind.
 
-**STAND-IN VALIDATION — COMPLETE.** 278 unit tests pass; `ruff` clean;
+**STAND-IN VALIDATION — COMPLETE.** 281 unit tests pass; `ruff` clean;
 `shellcheck` clean. Full smoke test: 40 events published, 40 rows written, 2
 snapshots, with Parquet files, manifests and an `ingest_time_day=` partition
 directory present in the warehouse. Outage/recovery test: catalog stopped
@@ -700,7 +700,7 @@ does the same on native Linux and macOS runners.
 python3 -m unittest discover -s tests -v
 ```
 
-278 tests covering configuration parsing and validation (with and without the
+281 tests covering configuration parsing and validation (with and without the
 `iceberg` section), `env:NAME` resolution across every field that supports it,
 the message-display path including malformed payloads, event flattening against
 incomplete and structurally wrong payloads (including VAST's connectivity test
@@ -747,9 +747,18 @@ namespace and table named in the environment, and refuses obviously dangerous
 names such as `default`, `system` or `*`.
 
 Clearing the consumer group replays the topic; it does not empty the Kafka
-log. To delete and recreate the Event Broker topic itself (so retained
-message count returns to zero), use `scripts/demo_recreate_topic.py` with
-`vastpy` and `--confirm`. See [docs/iceberg-demo.md](docs/iceberg-demo.md#resetting-between-runs).
+log. To zero **all four** dashboard meters (source objects, Kafka events,
+Iceberg rows, Parquet files):
+
+```bash
+./scripts/demo_reset.sh --confirm --all
+```
+
+That drops the Iceberg table, deletes every object in `VAST_SOURCE_BUCKET`
+(the bucket itself stays), then deletes and recreates the Event Broker topic
+via Kafka Admin `delete_topics` plus VMS. Stop the consumer first. After it
+finishes, re-save the source bucket notification. See
+[docs/iceberg-demo.md](docs/iceberg-demo.md#resetting-between-runs).
 
 **End to end:**
 

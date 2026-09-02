@@ -845,7 +845,7 @@ Using `docker/docker-compose.yml` as shipped, with the VAST endpoints and
 credentials supplied through the same environment variables a real cluster would
 populate:
 
-- 278 unit tests pass
+- 281 unit tests pass
 - `ruff` clean
 - `shellcheck` clean on every script
 - full smoke test: 40 events published, 40 rows written, 2 snapshots created,
@@ -1084,7 +1084,8 @@ offsets deleted so the topic replays.
 
 ```bash
 ./scripts/demo_reset.sh              # dry run: prints what it would do, changes nothing
-./scripts/demo_reset.sh --confirm    # apply
+./scripts/demo_reset.sh --confirm    # Iceberg table + consumer group
+./scripts/demo_reset.sh --confirm --all    # also empty the source bucket and Kafka log
 ```
 
 Optionally, it will also remove the demo objects previously written into the
@@ -1103,31 +1104,45 @@ It is deliberately hard to misuse, because it points at a customer's cluster:
 - it never deletes a bucket;
 - object deletion is restricted to the demo key prefix inside
   `VAST_SOURCE_BUCKET`, and every key is listed first;
-- `--purge-source` is opt-in on top of `--confirm`.
+- `--purge-source` is opt-in on top of `--confirm`;
+- `--purge-source-all` / `--all` delete every object in `VAST_SOURCE_BUCKET`
+  but still never delete the bucket, and they refuse if that bucket is the
+  Iceberg warehouse.
 
 Resetting the consumer group is the gentlest reset available: it replays the
 topic without touching any data. That works only while the events are still
 within the topic's retention window (7 days by default).
 
-That replay does **not** empty the Kafka log. `scripts/demo_watch.py` reports
-KAFKA EVENTS as retained messages on the topic (high watermark minus low
-watermark), so a week of prior demo traffic stays visible until the topic
-itself is deleted and created again. VAST does not auto-create topics, so
-this has to go through VMS. `scripts/demo_recreate_topic.py` does it with the
-official Python SDK (`pip install vastpy`):
+That replay does **not** empty the Kafka log, and it does not delete source
+objects. `scripts/demo_watch.py` reports KAFKA EVENTS as retained messages
+(high watermark minus low watermark) and SOURCE OBJECTS as every key in
+`VAST_SOURCE_BUCKET` unless you pass `--prefix`. To zero all four dashboard
+meters:
+
+```bash
+set -a; . ./docker/demo.env; set +a
+./scripts/demo_reset.sh --confirm --all
+```
+
+`--all` drops the Iceberg table, deletes every object in `VAST_SOURCE_BUCKET`
+(never the bucket itself, and never the warehouse bucket), then deletes and
+recreates `VAST_KAFKA_TOPIC`. Source purge runs first so ObjectRemoved
+events land on the old log and are wiped with it.
+
+A VMS-only topic delete can leave the Kafka log in place, which is why
+`scripts/demo_recreate_topic.py` also calls the Kafka Admin `delete_topics`
+API that VAST documents for the Event Broker, then creates the topic again
+through VMS (`pip install vastpy`):
 
 ```bash
 python3 -m pip install vastpy
-set -a; . ./docker/demo.env; set +a
 python3 scripts/demo_recreate_topic.py              # dry run
-python3 scripts/demo_recreate_topic.py --confirm    # apply
+python3 scripts/demo_recreate_topic.py --confirm    # Kafka log only
 ```
 
-It copies the existing partition count and retention, then deletes and
-recreates the one topic named by `VAST_KAFKA_TOPIC` in
-`VAST_KAFKA_DATABASE`. By default it also deletes `VAST_KAFKA_GROUP`, because
-committed offsets from the old log would skip the new one. It changes nothing
-without `--confirm`, and it does not drop Iceberg or delete S3 objects.
+It copies the existing partition count and retention. By default it also
+deletes `VAST_KAFKA_GROUP`, because committed offsets from the old log would
+skip the new one. It changes nothing without `--confirm`.
 
 Stop the demo consumer first. After it finishes, re-save the source bucket
 notification in VMS so events keep landing on the new topic (saving also
