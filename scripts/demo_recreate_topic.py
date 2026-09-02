@@ -228,6 +228,7 @@ def is_missing(exc: BaseException) -> bool:
         "does not exist",
         "no such topic",
         "unknown topic",
+        "unknown_topic_or_partition", 
         "topic not exist",
     )
     return any(needle in message for needle in needles)
