@@ -509,14 +509,42 @@ would be a poor design — thousands of one-row Parquet files and an unreadable
 snapshot history — so records buffer until either `batch_size` (25 here) or
 `flush_interval_seconds` (5) is reached.
 
-### 7. Watch the row count increase
+### 7. Watch the pipeline move
+
+The interesting picture is not one counter. It is four, in order, because they
+do not advance together: objects land in the watched bucket, VAST publishes
+Kafka events, the consumer writes Iceberg rows, and a Parquet file appears only
+when Iceberg commits a snapshot (a batch of 25 or 5s in this config).
+
+In its own terminal:
+
+```bash
+python3 scripts/demo_watch.py
+```
+
+That is a full-screen view, redrawn every 5 seconds. The three event meters
+share a scale so you can see Iceberg trailing S3; Parquet is one block per
+file, so each commit is a visible tick. Sparklines on the right are *rates*,
+not totals, which is why they jump on a burst of PUTs and stay quiet between
+Iceberg flushes.
+
+Drive it with real objects in a third terminal:
+
+```bash
+python3 scripts/demo_ingest.py --count 200 --interval 0.15
+```
+
+Keys land under `demo/`, the prefix `scripts/demo_reset.sh --purge-source`
+will delete. `--plain` is a vmstat-style line instead of the full screen;
+`--synthetic` animates the same layout without a cluster, which is the way to
+rehearse the screen before the customer arrives.
+
+The Trino `watch` one-liner still works if you only care about the row count:
 
 ```bash
 watch -n 2 'docker compose -f docker/docker-compose.yml exec -T trino \
   trino --execute "SELECT count(*) FROM iceberg.s3_events.object_events"'
 ```
-
-Write more objects and watch it climb.
 
 ### 8. Query the latest rows in the GUI
 
@@ -815,7 +843,7 @@ Using `docker/docker-compose.yml` as shipped, with the VAST endpoints and
 credentials supplied through the same environment variables a real cluster would
 populate:
 
-- 219 unit tests pass
+- 248 unit tests pass
 - `ruff` clean
 - `shellcheck` clean on every script
 - full smoke test: 40 events published, 40 rows written, 2 snapshots created,

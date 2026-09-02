@@ -589,7 +589,7 @@ entirely by the same environment variables a real cluster would populate. **None
 of it has been run against a real VAST cluster yet.** Read any claim about
 behaviour with that distinction in mind.
 
-**STAND-IN VALIDATION — COMPLETE.** 219 unit tests pass; `ruff` clean;
+**STAND-IN VALIDATION — COMPLETE.** 248 unit tests pass; `ruff` clean;
 `shellcheck` clean. Full smoke test: 40 events published, 40 rows written, 2
 snapshots, with Parquet files, manifests and an `ingest_time_day=` partition
 directory present in the warehouse. Outage/recovery test: catalog stopped
@@ -700,7 +700,7 @@ does the same on native Linux and macOS runners.
 python3 -m unittest discover -s tests -v
 ```
 
-219 tests covering configuration parsing and validation (with and without the
+248 tests covering configuration parsing and validation (with and without the
 `iceberg` section), `env:NAME` resolution across every field that supports it,
 the message-display path including malformed payloads, event flattening against
 incomplete and structurally wrong payloads — including VAST's connectivity test
