@@ -69,6 +69,13 @@ BAR_EMPTY_ASCII = "-"
 ARROW = "→"
 ARROW_ASCII = "->"
 
+LABEL_SOURCE = "DATA BUCKET S3 OBJECTS"
+LABEL_KAFKA = "KAFKA EVENTS CREATED"
+LABEL_ICEBERG = "ICEBERG WAREHOUSE NUMROWS"
+LABEL_PARQUET = "ICEBERG PARQUET FILES CREATED"
+METER_LABELS = (LABEL_SOURCE, LABEL_KAFKA, LABEL_ICEBERG, LABEL_PARQUET)
+METER_LABEL_WIDTH = max(len(label) for label in METER_LABELS)
+
 ANSI_RE = re.compile(r"\033\[[0-9;]*[A-Za-z]")
 RESET = "\033[0m"
 ENTER_ALT = "\033[?1049h\033[?25l"
@@ -1117,7 +1124,7 @@ def _meter_row(
     files: bool,
     cols: int,
 ) -> str:
-    name = pad(style.label(label), 16)
+    name = pad(style.label(label), METER_LABEL_WIDTH)
     number = format_int(value, 7)
     if value is None:
         number = style.err(number)
@@ -1152,7 +1159,7 @@ def render_tui(
     rows: int,
     meta: ViewMeta,
 ) -> str:
-    cols = max(72, cols)
+    cols = max(88, cols)
     current = history[-1]
     previous = history[-2] if len(history) >= 2 else None
     dt_s = (current.t - previous.t) if previous is not None else 0.0
@@ -1180,9 +1187,10 @@ def render_tui(
                    and previous.parquet_s3 is not None
                    and current.parquet_s3 > previous.parquet_s3)
 
-    spark_w = 14 if cols >= 96 else 10
-    # label 2+16, value 1+7, bar gaps, rate 1+8, spark 1+spark_w
-    bar_w = max(12, cols - (2 + 16 + 1 + 7 + 1 + 8 + 1 + spark_w + 3))
+    spark_w = 14 if cols >= 110 else 10
+    # leading 2, label, value 7, rate 8, spark, and the spaces between them
+    overhead = 2 + METER_LABEL_WIDTH + 1 + 7 + 1 + 8 + 1 + spark_w + 3
+    bar_w = max(12, cols - overhead)
     scale = _event_scale(current, meta.expect)
 
     def spark_for(getter: Callable[[Sample], int | None]) -> str:
@@ -1229,25 +1237,25 @@ def render_tui(
 
     lines.append(
         _meter_row(
-            style, "SOURCE OBJECTS", current.source_objects, s3_bar,
+            style, LABEL_SOURCE, current.source_objects, s3_bar,
             s3_rate, spark_for(lambda s: s.source_objects), s3_up, False, cols,
         )
     )
     lines.append(
         _meter_row(
-            style, "KAFKA EVENTS", kafka_events(current), k_bar,
+            style, LABEL_KAFKA, kafka_events(current), k_bar,
             k_rate, spark_for(kafka_events), k_up, False, cols,
         )
     )
     lines.append(
         _meter_row(
-            style, "ICEBERG ROWS", current.iceberg_rows, row_bar,
+            style, LABEL_ICEBERG, current.iceberg_rows, row_bar,
             row_rate, spark_for(lambda s: s.iceberg_rows), row_up, False, cols,
         )
     )
     lines.append(
         _meter_row(
-            style, "PARQUET FILES", current.parquet_s3, file_bar,
+            style, LABEL_PARQUET, current.parquet_s3, file_bar,
             file_rate, spark_for(lambda s: s.parquet_s3), file_up, True, cols,
         )
     )

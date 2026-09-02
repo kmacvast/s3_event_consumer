@@ -301,7 +301,7 @@ class RenderTests(unittest.TestCase):
         )
         frame = watch.render_tui(history, style, cols=100, rows=32, meta=meta)
         self.assertNotIn("\033[", frame)
-        for label in ("SOURCE OBJECTS", "KAFKA EVENTS", "ICEBERG ROWS", "PARQUET FILES"):
+        for label in watch.METER_LABELS:
             self.assertIn(label, frame)
         self.assertIn("kmacs-data-bucket-02", frame)
         self.assertIn("s3-events", frame)
@@ -309,6 +309,40 @@ class RenderTests(unittest.TestCase):
         self.assertIn("Parquet grows per Iceberg snapshot", frame)
         # Shared-scale teaching line is present.
         self.assertIn("share scale", frame)
+
+    def test_meter_labels_pad_to_one_column_and_fit_width(self):
+        style = watch.Style(enabled=False, ascii_mode=True)
+        sample = watch.Sample(
+            t=1.0,
+            wall=dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc),
+            source_objects=184,
+            kafka_retained=171,
+            iceberg_rows=150,
+            parquet_s3=6,
+        )
+        meta = watch.ViewMeta(
+            title="vast-iceberg-demo",
+            source="s3://demo-data",
+            topic="s3-events",
+            table="s3_events.object_events",
+            interval=5.0,
+            elapsed=1.0,
+            paused=False,
+            synthetic=False,
+            expect=None,
+            batch_size=25,
+        )
+        cols = 100
+        frame = watch.render_tui([sample], style, cols=cols, rows=24, meta=meta)
+        lines = [ln for ln in frame.splitlines() if any(label in ln for label in watch.METER_LABELS)]
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(watch.METER_LABEL_WIDTH, 29)
+        gap = 2 + watch.METER_LABEL_WIDTH
+        for line, label in zip(lines, watch.METER_LABELS):
+            self.assertTrue(line[2:].startswith(label))
+            self.assertEqual(line[gap], " ")
+            self.assertRegex(line[gap + 1 : gap + 8], r"^[ 0-9,-]+$")
+            self.assertLessEqual(len(line.rstrip()), cols)
 
     def test_tui_with_color_uses_ansi_but_not_on_every_character(self):
         style = watch.Style(enabled=True, ascii_mode=True, color256=True)
@@ -335,7 +369,7 @@ class RenderTests(unittest.TestCase):
         frame = watch.render_tui([sample], style, cols=90, rows=24, meta=meta)
         self.assertIn("\033[", frame)
         # Colour is for values and bars, not a different colour on every label.
-        self.assertIn("SOURCE OBJECTS", watch.strip_ansi(frame))
+        self.assertIn("DATA BUCKET S3 OBJECTS", watch.strip_ansi(frame))
 
 
 class MainSyntheticTests(unittest.TestCase):
@@ -357,10 +391,10 @@ class MainSyntheticTests(unittest.TestCase):
             )
         self.assertEqual(rc, 0)
         out = buf.getvalue()
-        self.assertIn("SOURCE OBJECTS", out)
-        self.assertIn("KAFKA EVENTS", out)
-        self.assertIn("ICEBERG ROWS", out)
-        self.assertIn("PARQUET FILES", out)
+        self.assertIn("DATA BUCKET S3 OBJECTS", out)
+        self.assertIn("KAFKA EVENTS CREATED", out)
+        self.assertIn("ICEBERG WAREHOUSE NUMROWS", out)
+        self.assertIn("ICEBERG PARQUET FILES CREATED", out)
         self.assertNotIn("\033[", out)
         self.assertNotRegex(out, r"[+-]\d{4,}/s")
 
