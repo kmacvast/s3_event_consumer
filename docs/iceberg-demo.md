@@ -201,7 +201,7 @@ differences are documented
 
 | Limit | Consequence here |
 | --- | --- |
-| No automatic topic creation | Create the topic first, by hand. |
+| No automatic topic creation | Create the topic first, by hand or with `scripts/demo_recreate_topic.py`. |
 | No over-the-wire compression | Do not set `compression.type` on the client. |
 | No transactions | Exactly-once via Kafka transactions is not available. |
 | No cooperative rebalancing | Rebalances are eager. |
@@ -247,7 +247,9 @@ containers, the consumer and the scripts alike:
 | `VAST_SOURCE_BUCKET` | The bucket objects are written into, with the notification attached. |
 | `VAST_KAFKA_BROKER` | `host:port` list of Event Broker VIPs. |
 | `VAST_KAFKA_TOPIC` | The topic the notification publishes into, exactly as named in VAST. |
+| `VAST_KAFKA_DATABASE` | VAST Database named after the Kafka-enabled view. Required by `scripts/demo_recreate_topic.py`, not by the consumer. |
 | `VAST_KAFKA_GROUP` | Consumer group. Kafka tracks the read position per group. |
+| `VAST_VMS_ADDRESS` / `VAST_VMS_USER` / `VAST_VMS_PASSWORD` | VMS credentials for `vastpy`. Token variants and `VMS_*` names also work. |
 | `ICEBERG_WAREHOUSE` | `s3://<bucket>/` for the warehouse. Must not be `VAST_SOURCE_BUCKET`. |
 | `ICEBERG_CATALOG_URI` | Where containers reach the catalog (`http://iceberg-rest:8181`). |
 | `ICEBERG_CATALOG_URI_HOST` | Where the consumer and scripts reach it from the host (`http://localhost:8181`). |
@@ -843,7 +845,7 @@ Using `docker/docker-compose.yml` as shipped, with the VAST endpoints and
 credentials supplied through the same environment variables a real cluster would
 populate:
 
-- 252 unit tests pass
+- 278 unit tests pass
 - `ruff` clean
 - `shellcheck` clean on every script
 - full smoke test: 40 events published, 40 rows written, 2 snapshots created,
@@ -1105,7 +1107,31 @@ It is deliberately hard to misuse, because it points at a customer's cluster:
 
 Resetting the consumer group is the gentlest reset available: it replays the
 topic without touching any data. That works only while the events are still
-within the topic's retention window — 7 days by default.
+within the topic's retention window (7 days by default).
+
+That replay does **not** empty the Kafka log. `scripts/demo_watch.py` reports
+KAFKA EVENTS as retained messages on the topic (high watermark minus low
+watermark), so a week of prior demo traffic stays visible until the topic
+itself is deleted and created again. VAST does not auto-create topics, so
+this has to go through VMS. `scripts/demo_recreate_topic.py` does it with the
+official Python SDK (`pip install vastpy`):
+
+```bash
+python3 -m pip install vastpy
+set -a; . ./docker/demo.env; set +a
+python3 scripts/demo_recreate_topic.py              # dry run
+python3 scripts/demo_recreate_topic.py --confirm    # apply
+```
+
+It copies the existing partition count and retention, then deletes and
+recreates the one topic named by `VAST_KAFKA_TOPIC` in
+`VAST_KAFKA_DATABASE`. By default it also deletes `VAST_KAFKA_GROUP`, because
+committed offsets from the old log would skip the new one. It changes nothing
+without `--confirm`, and it does not drop Iceberg or delete S3 objects.
+
+Stop the demo consumer first. After it finishes, re-save the source bucket
+notification in VMS so events keep landing on the new topic (saving also
+publishes the connectivity test event).
 
 ## What is implemented, and what is not
 

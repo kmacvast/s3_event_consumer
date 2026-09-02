@@ -12,6 +12,10 @@
 #   3. Optionally (--purge-source) the demo objects previously written into the
 #      watched bucket under the demo prefix.
 #
+# It does not empty the Kafka log. VAST retention keeps prior events until
+# they expire (7 days by default). To delete and recreate the topic itself,
+# use scripts/demo_recreate_topic.py.
+#
 # SAFETY
 # This script is deliberately hard to misuse:
 #   - It changes nothing without --confirm.

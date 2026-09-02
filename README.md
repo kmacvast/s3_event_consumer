@@ -589,7 +589,7 @@ entirely by the same environment variables a real cluster would populate. **None
 of it has been run against a real VAST cluster yet.** Read any claim about
 behaviour with that distinction in mind.
 
-**STAND-IN VALIDATION — COMPLETE.** 252 unit tests pass; `ruff` clean;
+**STAND-IN VALIDATION — COMPLETE.** 278 unit tests pass; `ruff` clean;
 `shellcheck` clean. Full smoke test: 40 events published, 40 rows written, 2
 snapshots, with Parquet files, manifests and an `ingest_time_day=` partition
 directory present in the warehouse. Outage/recovery test: catalog stopped
@@ -700,12 +700,13 @@ does the same on native Linux and macOS runners.
 python3 -m unittest discover -s tests -v
 ```
 
-252 tests covering configuration parsing and validation (with and without the
+278 tests covering configuration parsing and validation (with and without the
 `iceberg` section), `env:NAME` resolution across every field that supports it,
 the message-display path including malformed payloads, event flattening against
-incomplete and structurally wrong payloads — including VAST's connectivity test
-event — sink dispatch and failure isolation, and the Iceberg sink's batching,
-flush-on-shutdown, table creation and write-failure handling.
+incomplete and structurally wrong payloads (including VAST's connectivity test
+event), sink dispatch and failure isolation, the Iceberg sink's batching,
+flush-on-shutdown, table creation and write-failure handling, and Event Broker
+topic recreate planning and guard rails.
 
 PyIceberg is mocked throughout, so **no live broker, no Docker, no catalog and
 no PyIceberg installation are required** — only `requirements.txt`. Three schema
@@ -744,6 +745,11 @@ objects from the watched bucket, under the demo key prefix only. It changes
 nothing without `--confirm`, never deletes a bucket, only ever touches the one
 namespace and table named in the environment, and refuses obviously dangerous
 names such as `default`, `system` or `*`.
+
+Clearing the consumer group replays the topic; it does not empty the Kafka
+log. To delete and recreate the Event Broker topic itself (so retained
+message count returns to zero), use `scripts/demo_recreate_topic.py` with
+`vastpy` and `--confirm`. See [docs/iceberg-demo.md](docs/iceberg-demo.md#resetting-between-runs).
 
 **End to end:**
 
